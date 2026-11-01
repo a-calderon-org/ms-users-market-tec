@@ -1,5 +1,5 @@
 {
-  "normal_count": 111,
+  "normal_count": 137,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -36,5 +36,51 @@
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",
     "updatesOnlyTheProfileDetailsAndIncrementsVersion"
-  ]
+  ],
+  "required_normal_methods": {
+    "HexagonalArchitectureTest": [
+      "dependenciesPointInward",
+      "domainIsFrameworkIndependent",
+      "applicationDoesNotDependOnOuterLayers",
+      "topLevelPackagesAreFreeOfCycles"
+    ],
+    "com.markettec.users.adapters.in.web.InternalHealthTest": [
+      "refusingTrafficReturns503AndRecoversWhenReady",
+      "mainListenerDoesNotPublishActuatorOrAdditionalProbePaths",
+      "managementIsLoopbackOnlyAndDoesNotExposeDetailsOrOtherEndpoints"
+    ],
+    "com.markettec.users.adapters.in.web.RequestLoggingTest": [
+      "failedRequestHasSafeEnvelopeAndCorrelated500Log(CapturedOutput)",
+      "oversizedCorrelationIdIsReplaced",
+      "escapingFilterFailureIsLoggedAs500AndRestoresTheEnclosingContext(CapturedOutput)",
+      "sqlAndStartupDiagnosticsCannotSerializeSecretsOrArbitraryContext(CapturedOutput)",
+      "requestLogContainsCorrelationButNoRawPathQueryOrCredentials(CapturedOutput)",
+      "normalRequestsProduceJsonAndDoNotRetainThePreviousContext(CapturedOutput)",
+      "correlationIdWithControlCharactersIsReplaced(CapturedOutput)"
+    ],
+    "com.markettec.users.config.SqlUserConfigTest": [
+      "appServiceRejectsBlankDestinationsBeforeAnyConnection(String)[1]",
+      "appServiceRejectsBlankDestinationsBeforeAnyConnection(String)[2]",
+      "appServiceRejectsDeveloperProfileBeforeConnecting",
+      "appServiceDatasourceUsesManagedIdentityWithoutDeveloperFallback",
+      "appServiceRejectsIntegrationProfileBeforeConnecting",
+      "appServiceRejectsMemoryProfileBeforeConnecting",
+      "unavailableManagedIdentityFailsStartupWithoutSelectingDeveloperCredentials",
+      "appServiceRequiresExplicitDatabaseConfiguration"
+    ],
+    "com.markettec.users.adapters.in.web.SqlReadinessHttpTest": [
+      "databaseOutageAfterStartupReturns503AndRecoveryReturns200(boolean)[1]",
+      "databaseOutageAfterStartupReturns503AndRecoveryReturns200(boolean)[2]"
+    ],
+    "com.markettec.users.adapters.in.web.ConcurrentRequestLoggingTest": [
+      "concurrentHttpRequestsIsolateRestoreAndCleanMdcOnReusedServerThreads(boolean, CapturedOutput)[1]",
+      "concurrentHttpRequestsIsolateRestoreAndCleanMdcOnReusedServerThreads(boolean, CapturedOutput)[2]"
+    ],
+    "com.markettec.users.adapters.out.sql.SqlReadinessHealthIndicatorTest": [
+      "cachesBothUpAndDownUntilExpiryAndReleasesConnections",
+      "concurrentHealthReadersShareOneJdbcValidation",
+      "jdbcAndClosedPoolFailuresAreDownWithoutPrivateDetails",
+      "rejectsNegativeCacheTtl"
+    ]
+  }
 }

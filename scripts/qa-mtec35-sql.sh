@@ -12,5 +12,6 @@ fi
 [[ "$(docker info --format '{{.OSType}}/{{.Architecture}}')" =~ ^linux/(x86_64|amd64)$ ]] || {
   echo 'Docker must be available and run native Linux x86-64 containers.' >&2; exit 1;
 }
+python3 -B -m unittest discover -s scripts/tests -v
 ./mvnw --batch-mode --no-transfer-progress -Psql-integration clean verify
 python3 scripts/verify-mtec35-reports.py

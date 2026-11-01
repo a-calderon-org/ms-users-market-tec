@@ -9,11 +9,21 @@ public final class AzureSqlConnection {
     private AzureSqlConnection() { }
 
     public static SQLServerDataSource dataSource(String server, String database, int port) throws SQLException {
+        return dataSource(server, database, port, "ActiveDirectoryDefault");
+    }
+
+    /** Runtime on Azure: no developer credential chain or password fallback. */
+    public static SQLServerDataSource managedIdentityDataSource(String server, String database, int port) throws SQLException {
+        return dataSource(server, database, port, "ActiveDirectoryManagedIdentity");
+    }
+
+    private static SQLServerDataSource dataSource(String server, String database, int port, String authentication)
+            throws SQLException {
         SQLServerDataSource source = new SQLServerDataSource();
         source.setServerName(server);
         source.setDatabaseName(database);
         source.setPortNumber(port);
-        source.setAuthentication("ActiveDirectoryDefault");
+        source.setAuthentication(authentication);
         source.setEncrypt("true");
         source.setTrustServerCertificate(false);
         source.setHostNameInCertificate("*.database.windows.net");
