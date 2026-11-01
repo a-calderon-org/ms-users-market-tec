@@ -1,102 +1,195 @@
-# MTEC-35 — Revalidación con SQL Server aislado en GitHub Actions
+# MTEC-35 — QA de persistencia SQL en runner aislado
 
-Fecha de revisión: 2026-10-31, America/Costa_Rica.
+Fecha: **2026-10-31, America/Costa_Rica**. Repositorio:
+`a-calderon-org/ms-users-market-tec`.
 
-**Dictamen actual: QA PARTIAL — BLOCKED, pendiente de evidencia remota.**
+**Dictamen definitivo: QA PASS WITH NOTES.** Las verificaciones críticas de esta
+revalidación aprobaron sobre **SQL Server 2022 CU18, versión real 16.0.4185.3**:
+111 pruebas normales y 34 SQL, sin fallos, errores, flakes ni omitidas. Los 34 casos
+incluyen los 29 recibidos y cinco adicionales. La identidad Entra de ejecución
+restringida en Azure no se certifica aquí; sí se probó una identidad SQL local con
+permisos limitados. Esa comprobación remota permanece pendiente antes de operar en
+Azure y no se sustituye por el resultado del contenedor.
 
-La implementación recibida se preservó en `baa58ff`; HEAD de entrada:
-`db8e352e876a006d8ca5034baae0e4a714e9097d`, rama
-`feat/mtec35-azure-sql-persistence`. No se modificó el worktree MTEC-34.
+## Evidencia definitiva y estado Git
 
-Se prepara un runner estándar `ubuntu-24.04`, Linux x86-64, Java 21 y Maven wrapper
-3.9.11. Testcontainers 1.21.4 utiliza `MSSQLServerContainer` y la imagen oficial
-`mcr.microsoft.com/mssql/server:2022-CU18-ubuntu-22.04@sha256:ea73825f3d88a23c355ac2f9fdc6bd960fec90171c12c572109b36a558f77bb8`.
-MCR devolvió HTTP 200 y config `linux/amd64` para CU18 y `2022-latest`; se conserva
-CU18 fijada por digest para aislar la validación del motor de un cambio de versión.
-El usuario autorizó expresamente aceptar el EULA de SQL Server 2022 Developer para
-este QA efímero. La fixture exige `MTEC35_SQLSERVER_ACCEPT_EULA=Y`.
+| Elemento | Evidencia |
+|---|---|
+| Worktree | `/private/tmp/markettec-mtec35-worktree` |
+| Rama | `feat/mtec35-azure-sql-persistence` |
+| HEAD inicial | `db8e352e876a006d8ca5034baae0e4a714e9097d` |
+| Implementación recibida preservada | Commit `baa58ff` separado de los cambios de QA |
+| Commit de código validado y publicado | `100e55b58bcadb0070e6523cf427a842b2fc6276` |
+| GitHub Actions run ID | **41275121477** |
+| Evento / estado | `push` / `completed`, `success`, rama y SHA comprobados mediante API |
+| Run | [Ejecución definitiva](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41275121477) |
+| Workflow ejecutado | [qa-mtec35-sql.yml en el commit validado](https://github.com/a-calderon-org/ms-users-market-tec/blob/100e55b58bcadb0070e6523cf427a842b2fc6276/.github/workflows/qa-mtec35-sql.yml) |
+| Artefacto | [Surefire, Failsafe y resumen JSON](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41275121477/artifacts/13070648137) |
+| Ventana del run | 2026-10-31 22:58:54–23:00:35, America/Costa_Rica (04:58:54–05:00:35 UTC del 1 de noviembre) |
+| Runner | Estándar `ubuntu-24.04`, Ubuntu 24.04.5 LTS, Linux x86-64 nativo, 2 vCPU, 8 317 935 616 bytes RAM |
+| Docker / Java / Maven | 28.0.4 / Temurin 21.0.13+9 x64 / wrapper 3.9.11 |
+| Dependencias comprobadas en XML | Testcontainers y módulo mssqlserver 1.21.4; Flyway core/sqlserver 11.7.2; JDBC 12.10.2.jre11; Spring JDBC/TX 6.2.19 |
+| Imagen real descargada | `mcr.microsoft.com/mssql/server@sha256:ea73825f3d88a23c355ac2f9fdc6bd960fec90171c12c572109b36a558f77bb8` |
+| Tag asociado verificado en MCR | `2022-CU18-ubuntu-22.04`, config `linux/amd64`, etiqueta Microsoft `16.0.4185.3` |
+| Motor confirmado por consulta | `SERVERPROPERTY('ProductMajorVersion')=16`, `ProductVersion=16.0.4185.3`, antes de crear la base y ejecutar Flyway |
+| Base / collation | `mtec35_isolated` efímera, vacía antes de V1 / `SQL_Latin1_General_CP1_CI_AS` |
+| Azure / PR / merge / deploy / Jira | Ninguno modificado, creado o ejecutado |
 
-Comando estricto real del workflow:
+El worktree MTEC-34 permaneció en `feat/mtec34-user-domain`, HEAD
+`43374633a5bc7d230aef3e8b8f6f389ec8e0a913`, con su archivo CI sin seguimiento intacto.
+Se auditaron ambos estados Git, remotos, worktrees y ausencia de conflictos. No hubo
+reset, clean de Git, rebase, force push, cambio de rama ni cambios en otro repositorio.
+La publicación usa exclusivamente la rama MTEC-35. El cierre del informe se publica
+como cambio documental posterior: el código y workflow evaluados siguen siendo los
+del SHA indicado; `docs/**` está excluido del trigger para evitar otro run innecesario.
+
+## Ejecución estricta y recuentos reconciliados
 
 ```bash
+# Solo después de aceptar el EULA, sobre Linux x86-64 con Docker nativo:
 MTEC35_SQLSERVER_ACCEPT_EULA=Y bash scripts/qa-mtec35-sql.sh
-# Ejecuta ./mvnw --batch-mode --no-transfer-progress -Psql-integration clean verify
-# y luego python3 scripts/verify-mtec35-reports.py.
+
+# El script ejecuta exactamente:
+./mvnw --batch-mode --no-transfer-progress -Psql-integration clean verify
+python3 scripts/verify-mtec35-reports.py
 ```
 
-El perfil ordinario no descubre SQL por diseño. Activado `sql-integration`, Docker
-no disponible produce error en `@BeforeAll`, no skip. Surefire y Failsafe fallan si
-no descubren pruebas; la puerta adicional exige XML con 111 casos normales y 34
-métodos SQL identificados individualmente, sin errores, fallos ni skipped. No acepta
-un XML de inicialización como un método SQL ejecutado. Un clean impide reutilizar
-informes antiguos. El inventario conserva los 29 métodos recibidos y añade cinco.
+El usuario autorizó expresamente el EULA de SQL Server 2022 Developer para el QA
+efímero. La fixture exige esa variable y configura `MSSQL_PID=Developer`.
+Información del editor: [imagen oficial y licencia](https://hub.docker.com/r/microsoft/mssql-server),
+[módulo Testcontainers](https://java.testcontainers.org/modules/databases/mssqlserver/).
 
-Verificación local actual: Java Temurin 21.0.13+9, Maven 3.9.11, 111 normales
-aprobadas (Surefire, cero fallos/errores/omitidas). Los 34 casos SQL compilan. Sin
-variable de aceptación, Failsafe falla expresamente antes de Docker; el verificador
-rechaza ese informe. Esto no constituye ejecución de SQL ni validación de V1.
+| Suite / evidencia XML | Ejecutadas | Aprobadas | Fallos | Errores | Omitidas |
+|---|---:|---:|---:|---:|---:|
+| Surefire: nueve XML `TEST-*.xml` | 111 | 111 | 0 | 0 | 0 |
+| Failsafe: `SqlUserStoreIT` | 34 | 34 | 0 | 0 | 0 |
+| Total | **145** | **145** | **0** | **0** | **0** |
 
-Correcciones de QA: uso del módulo Microsoft, digest inmutable, puerto aleatorio
-solo en loopback comprobado por inspección, espera por log y SELECT con certificado
-TLS validado, timeouts de arranque/socket/test/job, cleanup de fixture/Ryuk más paso
-final por etiqueta del contenedor. Permisos de workflow `contents: read`; acciones
-oficiales fijadas por SHA, checkout sin credenciales persistentes, sin secrets ni
-OIDC, despliegue, Azure ni autenticación MTEC-36. Push solo de la rama indicada;
-los cambios exclusivos de docs no consumen otra ejecución.
+Las 111 normales se desglosan en dominio 46, casos de uso 21, memoria 4, adaptador
+SQL con mocks 25, configuración SQL 5, configuración local 2, HTTP health 3,
+arranque 1 y arquitectura 4. Los mocks no se contaron como evidencia del motor.
+Failsafe summary declara `completed=34`, `errors=0`, `failures=0`, `skipped=0`,
+`flakes=0`. Se cotejaron individualmente los 34 nombres/classname contra
+`scripts/mtec35-test-inventory.json` y contra `mtec35-qa-results.json`, además de
+reconciliar atributos y elementos testcase en cada XML. No se confundió compilación,
+descubrimiento ni error de `@BeforeAll` con métodos SQL ejecutados.
 
-Se conserva SERIALIZABLE: el contrato de UserTransactions exige serialización de
-operaciones que abarcan usuario, perfil e identidad. Se añaden un test del nivel
-real de la sesión y un deadlock determinista de locks compartidos/exclusivos, con
-reintento completo y comprobación de ambos commits. No se cambia el aislamiento
-para reducir tiempos. La frontera es TransactionTemplate, no un proxy @Transactional;
-se comprueba su sesión JDBC y que no queda transacción activa al salir.
+ZIP descargado: `/private/tmp/mtec35-run4-reports.zip`, 57 730 bytes, SHA-256
+`32b65ffd46c7828c6ffe73837139bf464aca43805d848b64adb1db5c04a6eb44`, coincidente con
+GitHub. Evidencia extraída fuera del repositorio:
+`/private/tmp/mtec35-remote-evidence/run-41275121477/`. Log:
+`/private/tmp/mtec35-run4-job.log`. El artefacto remoto tiene retención de siete días;
+el workflow y el comando permiten reproducir la validación.
 
-Flyway V1, rollback, concurrencia y runtime restringido: **pendientes del runner**.
-Primer run: [41274402664](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41274402664),
-commit `a789a5c26ce75628f019bcb1db927a0bcae299a3`, resultado failure. Surefire:
-111/111 aprobadas. Failsafe: 34 ejecutadas, 20 aprobadas, 2 fallos, 12 errores,
-0 omitidas. V1 se aplicó desde cero, el esquema se validó y los 20 casos previos al
-reinicio aprobaron, incluidos carreras de altas/vínculos, case/Unicode, rollback
-anidado, deadlock real y ausencia de replay después de commit.
+El verify normal de desarrollo no activa el perfil SQL y puede ser verde sin SQL.
+El perfil SQL existente ya fallaba al faltar Docker, sin assumptions ni @Disabled.
+Se mantiene ese comportamiento, Surefire y Failsafe fallan si no descubren pruebas,
+y el modo estricto añade comprobaciones de plataforma/Docker y exige ambos conjuntos
+de XML, sus recuentos exactos y los 34 métodos aprobados. Un clean de Maven evita
+informes antiguos. Se probaron localmente rechazos por informes ausentes, skips y
+casos faltantes, además del rechazo de este Mac ARM64 y del arranque sin aceptación.
+El workflow no tiene continue-on-error ni exclusiones de pruebas críticas.
 
-La prueba de reinicio perdió el endpoint publicado: el binding aleatorio HostPort=0
-puede recibir otro puerto en Docker tras restart, mientras Testcontainers conserva
-la inspección de arranque. El test de recuperación y los 13 posteriores encontraron
-el endpoint anterior rechazando conexiones. Se corrige la fixture para inspeccionar
-el mapping vigente, comprobar nuevamente loopback y actualizar todos sus datasource.
-No se alteran los 34 métodos ni sus expectativas. La segunda ejecución [41274755407](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41274755407)
-terminó success: 111 normales y 34 SQL aprobadas, cero omitidas. Confirmó el cambio de
-puerto 32769 -> 32770 y la recuperación. **Ese verde no acredita SQL Server 2022**:
-la revisión de los logs identificó que se descargó `mssql/server:latest` y que Flyway
-reportó motor 17.0. La constante heredada `MSSQLServerContainer.IMAGE` ocultaba la
-constante de imagen del fixture dentro de su subclase; `super(IMAGE)` usaba latest.
-Se corrige a `super(IsolatedSqlServer.IMAGE)`, se imprime el nombre real usado por
-Testcontainers y se exige `SERVERPROPERTY('ProductMajorVersion')=16` antes de crear
-la base o ejecutar Flyway. El registro oficial confirma CU18=16.0.4185.3. Los dos
-primeros runs fueron diagnósticos con motor 17 y quedan excluidos como evidencia de
-compatibilidad 2022. El tercer run `41275039715` falló antes de iniciar SQL: Testcontainers 1.21.4
-interpreta tag+digest como un nombre de repositorio incompatible con el módulo.
-Se elimina el tag del argumento y se conserva el digest verificado de CU18:
-`mcr.microsoft.com/mssql/server@sha256:ea73825f3d88a23c355ac2f9fdc6bd960fec90171c12c572109b36a558f77bb8`.
-La construcción real de la subclase y la comprobación assertCompatibleWith se
-validaron localmente contra 1.21.4 sin iniciar Docker. Se intentó cancelar ese run
-para ahorrar cómputo, pero ya había finalizado (API 409); no se repitió la cancelación.
-La siguiente ejecución deberá acreditar motor 16 y la suite completa.
+## Resultados funcionales en SQL Server 2022
 
-Versiones observadas: Ubuntu 24.04.5 LTS, Linux x86-64, Docker 28.0.4, 2 vCPU,
-8 317 935 616 bytes RAM; Temurin 21.0.13+9, Maven 3.9.11. Cleanup y subida de XML
-terminaron success incluso tras el fallo. ZIP descargado y SHA-256 verificado:
-`4274f5eae720183c52c24ffd409ed6513dff02c0c63b686fe1c6dc97a405db90`.
-Se actualiza setup-java a v5 fijada por SHA al observar la deprecación de v4.
+| Verificación crítica | Resultado |
+|---|---|
+| Flyway V1 desde cero | PASS: cero tablas antes de migrar, una migración aplicada y segunda migración con cero cambios; historial con una V1 exitosa, checksum validado y cero pendientes |
+| Esquema y adaptador | PASS: tablas, PK, FK confiables, NOT NULL, CHECK, tipos/tamaños, hashes persistidos e índice de propietario comprobados mediante metadatos y operaciones reales |
+| Unicidad de identidad | PASS: PK compuesta de hashes UTF-16LE completos, sin truncar; duplicado entre proveedores rechazado y FK efectivas |
+| Collation | PASS: base CI_AS comprobada; issuer/subject BIN2 y hashes preservan diferencias de mayúsculas, acentos, normalización Unicode y claves largas |
+| Persistencia | PASS: usuario, todos los campos del perfil, identidad, precisión de nanosegundos, recuperación por otra instancia, actualización y desactivación idempotente |
+| Rollback | PASS: fallo tras las escrituras de usuario/perfil/identidad; fallo intermedio real de SQL; fallo anidado FK capturado; restauración de estado/perfil/versión; savepoint de negocio que conserva la unidad exterior |
+| Frontera transaccional | PASS: TransactionTemplate/UserTransactions posee la unidad real; sesión JDBC con aislamiento 4 (SERIALIZABLE), sin transacción ambiental residual; no se depende de un proxy @Transactional inexistente |
+| Concurrencia | PASS: altas simultáneas idempotentes sin huérfanos, vínculos a distintos propietarios con un ganador, coordinación vínculo/desactivación y versión con un escritor obsoleto |
+| Deadlock y reintento | PASS: locks compartidos/exclusivos opuestos provocan víctima y reintento de la unidad completa; ambos resultados finales y versiones se verifican |
+| Fallo posterior al commit | PASS: commit SQL real seguido de excepción inyectada con código reintentable; callback ejecutado una sola vez y datos confirmados recuperables |
+| Reinicios | PASS: contexto Spring y motor SQL; persistencia conservada después de restart real del contenedor, con actualización del endpoint efímero |
+| Runtime restringido local | PASS: validación de esquema y persistencia con SELECT/INSERT/UPDATE de las tres tablas, SELECT del historial y VIEW DEFINITION; db_owner/CREATE TABLE/ALTER dbo/DELETE ausentes y DDL/DELETE efectivamente rechazados |
+| Arquitectura | PASS: cuatro reglas ArchUnit, incluidas dentro de las 111 normales |
 
-La identidad SQL restringida de pruebas recibe SELECT/INSERT/UPDATE de las tres
-tablas, SELECT del historial y VIEW DEFINITION. Se comprobarán persistencia y
-validación, y se rechazarán CREATE TABLE, ALTER dbo, DELETE y db_owner. La identidad
-Entra de ejecución en Azure sigue pendiente y está fuera de esta ejecución.
+No se modificó V1: SHA-256 sigue siendo
+`de308e0f419cb80e2762c3fd6d7cf3afb1118a9d4679b98bd67e79660d318206`.
+No se modificó el aislamiento: el contrato de UserTransactions exige operaciones
+serializables de cuenta/identidad y la unidad abarca varias tablas; las carreras,
+locks y reintentos ahora tienen evidencia real. El alta necesita coordinar la
+lectura de una identidad ausente con su inserción; el vínculo debe coordinar estado
+de cuenta, reserva de identidad y verificación de perfil frente a desactivación.
+La actualización además dispone de comparación de agregado y versión para rechazar
+escritores obsoletos. Una consulta aislada podría necesitar garantías menores, pero
+las mismas lecturas participan en callbacks multitabla; no se introdujo una política
+de aislamiento por operación sin evidencia que preserve ese contrato. No se rebajó
+el aislamiento para acelerar los tests. Esto no es un benchmark de capacidad ni
+demuestra comportamiento con cualquier carga distribuida.
 
-Azure modificado: No. PR creado: No. Jira actualizado: No. Sin migraciones remotas.
+## Correcciones y trazabilidad de los intentos
+
+Se conservaron los 29 métodos SQL y sus expectativas. Se añadieron cinco casos:
+historial Flyway explícito, aislamiento JDBC real, deadlock determinista, error
+posterior al commit real y permisos de runtime local. La implementación previa y
+sus correcciones transaccionales permanecen en el commit inicial separado.
+
+| Run / commit | Resultado observado y tratamiento |
+|---|---|
+| [41274402664](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41274402664) / `a789a5c` | Failure: 111 normales aprobadas; 34 SQL ejecutadas, 20 aprobadas, 2 fallos y 12 errores. El restart dejó el endpoint anterior; los 13 casos siguientes heredaron conexiones rechazadas. Después se comprobó que el motor usado era 17.0: no es evidencia de SQL 2022. |
+| [41274755407](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41274755407) / `2eb1a24` | Success: 111 normales y 34 SQL aprobadas. Demostró cambio de puerto 32769 -> 32770 y recuperación tras corregir el mapping. Se descartó como acreditación SQL 2022 al detectar `mssql/server:latest` y versión 17.0 en el log. |
+| [41275039715](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41275039715) / `224ea7f` | Failure: 111 normales aprobadas; cero métodos SQL ejecutados, un error de preparación de clase. Testcontainers 1.21.4 rechazó tag+digest antes de crear el contenedor SQL. Se intentó cancelar para ahorrar cómputo, pero ya estaba completo (API 409). |
+| [41275121477](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41275121477) / `100e55b` | **Success definitivo: 111 normales y 34 SQL aprobadas sobre 16.0.4185.3, cero omitidas; ambos verificadores, cleanup y artefacto success.** |
+
+Se corrigieron tres defectos de la fixture de QA: Docker puede cambiar el puerto de
+HostPort=0 al reiniciar, por lo que ahora se inspecciona el mapping actual y se
+actualizan todos los datasource; la constante heredada MSSQLServerContainer.IMAGE
+ocultaba la constante externa, por lo que el constructor usa explícitamente
+IsolatedSqlServer.IMAGE; el parser 1.21 requiere referencia solo por digest para
+reconocer el repositorio del módulo. El nombre real de Testcontainers y la versión
+consultada al motor se registran, y cualquier major distinta de 16 aborta antes de
+crear la base o migrar. La construcción y compatibilidad del argumento final se
+comprobaron localmente sin Docker antes del último push.
+
+Los dos primeros runs arrancaron latest por el error de referencia, aunque la
+intención y la autorización de licencia recibida eran para 2022. Sus contenedores
+fueron eliminados; no se presentan como autorización ni evidencia del motor solicitado.
+No hubo cambio de expectativas para ocultar esos errores. setup-java se actualizó
+a v5 al observar la deprecación de v4, manteniendo el pin por SHA.
+
+## Seguridad, alcance y pendientes
+
+El workflow se limita a push de la rama MTEC-35, runner estándar y timeout de 20
+minutos; permiso único `contents: read`, acciones oficiales fijadas por SHA y
+checkout sin credenciales persistentes. No contiene secrets Azure, id-token: write,
+servicios de despliegue ni runner self-hosted. El conector GitHub devolvió 404 para el
+repositorio; se utilizó el acceso Git/API local ya configurado, sin publicar tokens.
+
+La fixture usa el módulo Microsoft, espera por log y SELECT con TLS/certificado
+verificado, timeouts de arranque/login/socket/test, contraseñas aleatorias exclusivas
+del contenedor y base vacía con nombre comprobado. El puerto se publica únicamente
+en 127.0.0.1 y se reinspecciona tras restart; no hay exposición SQL a Internet.
+No hay volúmenes persistentes. Stop/limpieza temporal de la fixture, Ryuk y el paso
+final por etiqueta del contenedor finalizaron correctamente; el paso comprueba cero
+contenedores SQL etiquetados restantes. La aceptación EULA requiere opt-in explícito.
+
+La revisión de contenido versionable no encontró tokens GitHub/JWT, claves privadas,
+credenciales Azure/Entra, datos reales ni artefactos generados. El candidato de texto
+PASSWORD era construcción de DDL con un parámetro aleatorio enlazado, no una contraseña
+literal. Solo se publicaron fuentes/configuración y documentación; los XML, ZIP,
+certificados, claves, logs y binarios quedan fuera de Git. Las URL JDBC del motor
+son locales; el servicio conserva sus propiedades Azure sin ejecutarlas aquí.
+No se conectó a `sql-markettec-dev.database.windows.net`, no se ejecutó AzureSqlProbe,
+ni se crearon recursos o migraciones remotas, ni se habilitó SQL auth en Azure.
+
+La evidencia de persistencia requerida para revisar el merge está completa. Para el
+cierre operativo de MTEC-35 sigue pendiente acreditar la identidad Entra de ejecución
+con permisos mínimos en su entorno autorizado, separada del migrador. El test local
+no prueba esa configuración remota. No se configura ni prueba Azure en esta tarea.
+No quedan casos SQL críticos pendientes en el runner aislado. La revisión humana y
+cualquier migración/operación futura requieren su propio alcance; no se crea PR,
+no se fusiona, no se actualiza Jira ni se inicia otro ticket automáticamente.
+
+Azure modificado: **No**. PR creado: **No**. MTEC-36/MTEC-37, frontend, OpenAPI y
+`market_tec`: **sin cambios**.
 
 <!-- MTEC35_REMOTE_REVIEW_END -->
+
 
 La sección siguiente conserva la revisión anterior como evidencia histórica. Sus
 recuentos y bloqueos no sustituyen el resultado de la revalidación que encabeza el informe.
