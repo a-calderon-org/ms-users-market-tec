@@ -24,18 +24,27 @@ import java.sql.SQLException;
 import java.time.Clock;
 
 @Configuration
-@Profile("sql-dev | sql-integration")
+@Profile("sql-dev | sql-appservice | sql-integration")
 public class SqlUserConfig {
     @Bean(destroyMethod = "close")
-    @Profile("sql-dev")
+    @Profile("sql-dev | sql-appservice")
     HikariDataSource sqlDataSource(Environment environment,
             @Value("${users.sql.server}") String server, @Value("${users.sql.database}") String database,
             @Value("${users.sql.port}") int port, @Value("${users.sql.maximum-pool-size}") int poolSize) throws SQLException {
         if (environment.acceptsProfiles(Profiles.of("local", "in-memory", "sql-integration"))) {
             throw new IllegalStateException("Select exactly one persistence profile");
         }
+        boolean appService = environment.acceptsProfiles(Profiles.of("sql-appservice"));
+        if (appService && environment.acceptsProfiles(Profiles.of("sql-dev"))) {
+            throw new IllegalStateException("Select exactly one persistence profile");
+        }
+        if (server == null || server.isBlank() || database == null || database.isBlank()) {
+            throw new IllegalArgumentException("SQL server and database must be explicit and non-blank");
+        }
         HikariConfig config = new HikariConfig();
-        config.setDataSource(AzureSqlConnection.dataSource(server, database, port));
+        config.setDataSource(appService
+                ? AzureSqlConnection.managedIdentityDataSource(server, database, port)
+                : AzureSqlConnection.dataSource(server, database, port));
         config.setPoolName("users-sql");
         config.setMaximumPoolSize(poolSize);
         config.setMinimumIdle(0);

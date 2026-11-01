@@ -1,0 +1,7 @@
+# Runtime only: explicit destinations, system-assigned Managed Identity, no migrations.
+users:
+  sql:
+    server: ${USERS_SQL_SERVER}
+    database: ${USERS_SQL_DATABASE}
+    port: ${USERS_SQL_PORT:1433}
+    maximum-pool-size: ${USERS_SQL_POOL_SIZE:3}
