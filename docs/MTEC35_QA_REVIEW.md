@@ -52,8 +52,25 @@ para reducir tiempos. La frontera es TransactionTemplate, no un proxy @Transacti
 se comprueba su sesión JDBC y que no queda transacción activa al salir.
 
 Flyway V1, rollback, concurrencia y runtime restringido: **pendientes del runner**.
-Run ID, URL, commit ejecutado, versiones efectivas e inventario definitivo se
-registrarán después de revisar Actions y descargar Surefire/Failsafe.
+Primer run: [41274402664](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41274402664),
+commit `a789a5c26ce75628f019bcb1db927a0bcae299a3`, resultado failure. Surefire:
+111/111 aprobadas. Failsafe: 34 ejecutadas, 20 aprobadas, 2 fallos, 12 errores,
+0 omitidas. V1 se aplicó desde cero, el esquema se validó y los 20 casos previos al
+reinicio aprobaron, incluidos carreras de altas/vínculos, case/Unicode, rollback
+anidado, deadlock real y ausencia de replay después de commit.
+
+La prueba de reinicio perdió el endpoint publicado: el binding aleatorio HostPort=0
+puede recibir otro puerto en Docker tras restart, mientras Testcontainers conserva
+la inspección de arranque. El test de recuperación y los 13 posteriores encontraron
+el endpoint anterior rechazando conexiones. Se corrige la fixture para inspeccionar
+el mapping vigente, comprobar nuevamente loopback y actualizar todos sus datasource.
+No se alteran los 34 métodos ni sus expectativas. Segunda ejecución pendiente.
+
+Versiones observadas: Ubuntu 24.04.5 LTS, Linux x86-64, Docker 28.0.4, 2 vCPU,
+8 317 935 616 bytes RAM; Temurin 21.0.13+9, Maven 3.9.11. Cleanup y subida de XML
+terminaron success incluso tras el fallo. ZIP descargado y SHA-256 verificado:
+`4274f5eae720183c52c24ffd409ed6513dff02c0c63b686fe1c6dc97a405db90`.
+Se actualiza setup-java a v5 fijada por SHA al observar la deprecación de v4.
 
 La identidad SQL restringida de pruebas recibe SELECT/INSERT/UPDATE de las tres
 tablas, SELECT del historial y VIEW DEFINITION. Se comprobarán persistencia y

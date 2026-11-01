@@ -35,6 +35,8 @@ final class IsolatedSqlServer implements AutoCloseable {
             + "@sha256:ea73825f3d88a23c355ac2f9fdc6bd960fec90171c12c572109b36a558f77bb8";
     private TlsSqlServerContainer container;
     private Path temporary;
+    private int mappedPort;
+    private final java.util.List<SQLServerDataSource> sources = new java.util.ArrayList<>();
     private final String password = "Sql!" + UUID.randomUUID();
     private final String trustPassword = UUID.randomUUID().toString();
 
@@ -90,11 +92,7 @@ final class IsolatedSqlServer implements AutoCloseable {
                 .waitingFor(Wait.forLogMessage(".*SQL Server is now ready for client connections.*", 1))
                 .withStartupTimeout(Duration.ofMinutes(3));
         container.start();
-        var bindings = container.getContainerInfo().getNetworkSettings().getPorts()
-                .getBindings().get(new ExposedPort(1433));
-        if (bindings == null || bindings.length != 1 || !"127.0.0.1".equals(bindings[0].getHostIp())) {
-            throw new IllegalStateException("Isolated SQL port must bind exclusively to loopback");
-        }
+        mappedPort = inspectLoopbackPort();
         var admin = source("master");
         org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(60)).ignoreExceptions()
                 .until(() -> Integer.valueOf(1).equals(new JdbcTemplate(admin).queryForObject("SELECT 1", Integer.class)));
@@ -104,10 +102,21 @@ final class IsolatedSqlServer implements AutoCloseable {
         return source(DATABASE);
     }
 
+    private int inspectLoopbackPort() {
+        // Docker may assign a different ephemeral host port after restarting a binding with HostPort=0.
+        // Inspect the engine instead of relying on Testcontainers' cached startup inspection.
+        var current = DockerClientFactory.instance().client().inspectContainerCmd(container.getContainerId()).exec();
+        var bindings = current.getNetworkSettings().getPorts().getBindings().get(new ExposedPort(1433));
+        if (bindings == null || bindings.length != 1 || !"127.0.0.1".equals(bindings[0].getHostIp())) {
+            throw new IllegalStateException("Isolated SQL port must bind exclusively to loopback");
+        }
+        return Integer.parseInt(bindings[0].getHostPortSpec());
+    }
+
     SQLServerDataSource source(String database) throws Exception {
         SQLServerDataSource source = new SQLServerDataSource();
         source.setServerName(container.getHost());
-        source.setPortNumber(container.getMappedPort(1433));
+        source.setPortNumber(mappedPort);
         source.setDatabaseName(database);
         // Only the disposable container uses its randomly generated SQL password.
         source.setUser("sa");
@@ -120,6 +129,7 @@ final class IsolatedSqlServer implements AutoCloseable {
         source.setTrustStorePassword(trustPassword);
         source.setLoginTimeout(20);
         source.setSocketTimeout(30000);
+        sources.add(source);
         return source;
     }
 
@@ -144,7 +154,11 @@ final class IsolatedSqlServer implements AutoCloseable {
     }
 
     void restart() {
+        int previousPort = mappedPort;
         DockerClientFactory.instance().client().restartContainerCmd(container.getContainerId()).exec();
+        mappedPort = inspectLoopbackPort();
+        sources.forEach(source -> source.setPortNumber(mappedPort));
+        System.out.println("MTEC35 SQL engine restarted: loopback port " + previousPort + " -> " + mappedPort);
     }
 
     private static String pem(Object object) throws Exception {
