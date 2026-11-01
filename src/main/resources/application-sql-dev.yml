@@ -1,0 +1,7 @@
+# Flyway auto-configuration is excluded in all profiles. This profile NEVER migrates.
+users:
+  sql:
+    server: ${USERS_SQL_SERVER:sql-markettec-dev.database.windows.net}
+    database: ${USERS_SQL_DATABASE:sqldb-ms-users-dev}
+    port: ${USERS_SQL_PORT:1433}
+    maximum-pool-size: ${USERS_SQL_POOL_SIZE:3}

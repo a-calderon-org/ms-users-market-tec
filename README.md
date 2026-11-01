@@ -1,11 +1,14 @@
 # ms-users — MarketTec
 
-Implementación inicial del dominio de usuarios (MTEC-34), en el repositorio independiente
+Dominio de usuarios (MTEC-34) y adaptador relacional (MTEC-35), en el repositorio independiente
 `a-calderon-org/ms-users-market-tec`. Java 21, Spring Boot 3.5.16 y Maven Wrapper 3.9.11.
-El núcleo y los casos de uso son Java puro. No hay autenticación, sesiones, persistencia
-productiva ni endpoints HTTP de negocio.
+El núcleo y los casos de uso son Java puro. La persistencia SQL es optativa y requiere
+un esquema migrado explícitamente. No hay autenticación, sesiones ni endpoints HTTP de negocio.
 
 ## Desarrollo local
+
+La configuración y evidencia de MTEC-35 están en [Persistencia SQL](#persistencia-sql--mtec-35)
+y en [el informe de implementación](docs/MTEC35_IMPLEMENTATION.md).
 
 Requiere JDK 21; no requiere Maven global ni bases de datos.
 
@@ -47,9 +50,10 @@ src/main/java/com/markettec/users/
   application/ports/out/    Repositorios, generador, transacciones, autorización de vínculo
   application/usecases/     UserService y GetHealthService
   adapters/in/web/          Health, correlación y errores técnicos del scaffold
+  adapters/out/sql/         JDBC, transacciones, validación y sonda Azure de solo lectura
   adapters/out/memory/      InMemoryUserStore
   adapters/out/             UuidUserIdGenerator
-  config/                  Composición Spring; almacén habilitado solo con perfil local
+  config/                  Composición Spring; selección explícita local/in-memory o SQL
 src/test/java/com/markettec/users/
   domain/                   Invariantes, validación y conservación de datos
   application/              Casos de uso, confianza, idempotencia y concurrencia
@@ -153,7 +157,7 @@ comparten **el mismo** almacén en **un** proceso. No abarcan varias JVM, reinic
 réplicas ni fallos de infraestructura. Las copias de mapas por transacción son una
 solución de desarrollo/pruebas, no una elección de almacenamiento productivo.
 
-Un futuro adaptador persistente debe implementar el contrato de `UserTransactions`:
+El adaptador SQL de MTEC-35 implementa este contrato de `UserTransactions`:
 
 1. Ambos repositorios comparten transacción con commit atómico y rollback completo.
 2. Restricción única de almacenamiento sobre `(issuer, subject)`, independiente del
@@ -165,8 +169,9 @@ Un futuro adaptador persistente debe implementar el contrato de `UserTransaction
 5. Autorización consumible coordinada con la misma unidad, sin pérdida de concesiones
    por un rollback de cuenta/identidad.
 
-**No se afirma ninguna garantía de persistencia en producción** y no se conecta Azure
-SQL, Cosmos DB ni otro almacenamiento. La selección de persistencia sigue pendiente.
+MTEC-35 incorpora JDBC para Azure SQL y conserva este almacén de pruebas. La conexión
+Azure se validó mediante consultas de solo lectura; la migración remota no se ejecutó.
+La ejecución de las pruebas de SQL Server real está pendiente por falta de motor aislado compatible.
 
 ## Pruebas y límites pendientes
 
@@ -262,3 +267,264 @@ La implementación de MTEC-34 se desarrolla exclusivamente aquí. El scaffold an
 se preserva como origen histórico de migración; no se modifica ni se mantiene una
 segunda implementación del dominio allí. Su retirada y actualización de referencias
 son un trabajo de migración separado.
+
+## Persistencia SQL — MTEC-35
+
+### Arquitectura y diseño
+
+Se eligió **Spring JDBC** frente a JPA porque los puertos ya expresan snapshots
+inmutables, comparación del agregado completo y repetición de la unidad transaccional.
+JDBC permite expresar ese contrato con consultas pequeñas, sin duplicar el dominio en
+entidades mutables ni introducir dependencias Spring/JPA en aplicación o dominio.
+No se cambian los puertos, los casos de uso ni las pruebas originales.
+
+`SqlUserStore` implementa los dos repositorios y `UserTransactions`. Cada operación
+pública aislada abre una transacción; dentro de un caso de uso comparte la misma
+conexión y transacción. El almacén debe ser la misma instancia para los tres puertos.
+No se admite envolverlo en una transacción externa de aislamiento desconocido.
+La futura autorización consumible debe participar en esta conexión/transacción y
+volver a ejecutarse en cada intento. Por ahora SQL y memoria **rechazan todos los
+vínculos** en la composición real; solo las pruebas conceden autorizaciones explícitas.
+
+| Tabla | Datos y restricciones |
+|---|---|
+| `dbo.users` | PK `user_id` opaco `usr_` UUID v4; estado con CHECK; versión bigint no negativa |
+| `dbo.profiles` | PK/FK `user_id`, relación 1:1; todos los campos actuales del perfil, NOT NULL; sin unicidad de correo o nombre |
+| `dbo.external_identities` | FK al propietario, proveedor con CHECK, issuer y subject exactos, correo verificado original; PK calculada sobre dos SHA-256 independientes |
+
+Issuer y subject no tienen un máximo en el dominio. Se conservan como `nvarchar(max)`;
+la PK combina `issuer_hash` y `subject_hash`, calculados y persistidos por SQL Server
+sobre cada cadena UTF-16LE completa. Impone unicidad efectiva de `(issuer, subject)`
+independiente del proveedor, sin normalización, concatenación ambigua ni truncamiento.
+El adaptador compara también las cadenas originales: una hipotética colisión falla
+como error técnico y nunca asocia otra identidad. Las búsquedas usan esa PK.
+`ix_external_identities_user` soporta la relación referencial al propietario; no se
+crean índices de correo porque no existe búsqueda ni fusión por correo.
+
+Los tamaños NVARCHAR de los nombres admiten el doble de unidades UTF-16 que los
+máximos de puntos de código del dominio, conservando caracteres suplementarios.
+Las fechas guardan segundos y nanosegundos por separado: `datetime2(7)` perdería
+precisión de `Instant`. La URI y el correo mantienen su representación original.
+Las reglas de negocio siguen ejecutándose en los constructores y métodos de dominio.
+
+### Transacciones, concurrencia y errores
+
+- Aislamiento `SERIALIZABLE` para lectura de identidad, alta, vínculo, actualización y
+  desactivación; la PK única y las FK constituyen la última defensa en almacenamiento.
+- `replace` vuelve a leer y compara el agregado esperado. Actualiza `users` con
+  `WHERE version=?` e incrementa la versión, después escribe el perfil en la misma
+  transacción. Una comparación fallida produce `CONCURRENT_MODIFICATION`.
+- La versión es un detalle interno del adaptador. Los puertos de MTEC-34 comparan el
+  valor completo, sin exponer un token de versión. Como memoria, aceptan un snapshot
+  cuyo valor completo vuelva a ser igual; no prometen detectar ciclos ABA históricos.
+- Deadlock, timeout de bloqueo, conflictos de serialización y carreras de unicidad
+  identificados por códigos SQL Server se reintentan hasta **4 intentos**, con espera
+  breve y jitter, después del rollback. Se repite todo el trabajo, incluida autorización;
+  no se reintenta únicamente la sentencia de inserción ni se deja una cuenta perdedora.
+- Una unidad anidada usa un savepoint. Un fallo de negocio puede revertir solo ese
+  ámbito; un fallo técnico SQL o del savepoint invalida también la unidad exterior,
+  incluso si el llamador lo captura: algunos errores SQL revierten toda la transacción.
+  Los errores de conectividad y resultados inciertos del commit no se reproducen
+  automáticamente. Solo se repite la misma excepción transitoria del callback tras
+  completar su rollback; nunca un error de apertura, commit o rollback. Ninguna
+  operación depende de efectos externos no transaccionales dentro del callback.
+- Duplicados de usuario, conflicto de identidad, ausencia, desactivación y snapshot
+  obsoleto se traducen a las razones existentes. Fallos técnicos quedan como
+  `UserPersistenceException`, con mensaje neutro y sin publicar excepciones SQL,
+  sentencias, correos o credenciales. No se define un nuevo contrato HTTP de errores.
+
+A diferencia del monitor de memoria en una JVM, SQL coordina varias conexiones y
+procesos y conserva información tras reiniciar. Puede agotar reintentos bajo contención
+y producir errores de disponibilidad. La suite real pendiente debe acreditar estas
+propiedades antes de declarar el adaptador listo para producción.
+
+### Perfiles y variables
+
+| Perfil Spring | Comportamiento |
+|---|---|
+| ninguno | Fundación HTTP/health existente; sin repositorio ni datasource |
+| `local` o `in-memory` | Un único `InMemoryUserStore`; no abre conexiones |
+| `sql-dev` | Azure SQL con Microsoft Entra; valida esquema y checksum Flyway al arrancar; **jamás migra automáticamente** |
+| `sql-integration` | Composición JDBC sobre un datasource aislado provisto por la prueba; no hereda servidor Azure ni credenciales |
+
+Seleccionar SQL y memoria simultáneamente produce error. Un fallo SQL no activa memoria.
+`DataSourceAutoConfiguration` y `FlywayAutoConfiguration` están excluidas: el datasource
+SQL es explícito y la validación es de solo lectura. No hay Hibernate ni generación
+automática de DDL. `SqlSchemaValidator` comprueba la base, checksum/historial Flyway,
+columnas/tipos/tamaños/NOT NULL, PK, FK y CHECK habilitados, hashes persistidos e índice
+de propietario. Una base vacía rechaza el arranque SQL hasta migrarse por separado.
+
+| Variable | Valor de desarrollo / finalidad |
+|---|---|
+| `SPRING_PROFILES_ACTIVE` | `local`, `in-memory` o `sql-dev` |
+| `USERS_SQL_SERVER` | `sql-markettec-dev.database.windows.net` |
+| `USERS_SQL_DATABASE` | `sqldb-ms-users-dev` |
+| `USERS_SQL_PORT` | `1433` |
+| `USERS_SQL_POOL_SIZE` | `3`, pequeño para desarrollo |
+| `PORT`, `SERVICE_NAME` | `8080`, `ms-users` |
+
+`.env.example` es documentación, no un archivo cargado automáticamente por Spring.
+No definir usuario SQL, contraseña ni tokens para Azure. El modo de desarrollo es
+fijo `ActiveDirectoryDefault`; el driver usa `DefaultAzureCredential` y puede tomar
+el contexto de Azure CLI. Revisar que otras credenciales del entorno no seleccionen
+una identidad diferente. La sonda realizada confirmó uso de `AzureCliCredential`.
+
+Pool Hikari: mínimo de conexiones inactivas 0, idle timeout 60 segundos, sin keepalive,
+máximo de vida 10 minutos. Cerrar el proceso cuando no sea necesario; incluso una
+conexión inactiva puede impedir la pausa automática. No mantener una aplicación o
+sonda conectada permanentemente a la base gratuita.
+
+### Microsoft Entra y conexión JDBC de solo lectura
+
+Versiones efectivas: driver Microsoft **12.10.2.jre11** (compatible con Java 21),
+Azure Identity **1.15.3** y Flyway **11.7.2**, incluido **flyway-sqlserver**. Spring Boot
+3.5.16 gestiona JDBC y Flyway. El modo `ActiveDirectoryDefault` y esa dependencia están
+contrastados con la [documentación de Microsoft](https://learn.microsoft.com/en-us/sql/connect/jdbc/connecting-using-azure-active-directory-authentication)
+y el [módulo oficial de Flyway SQL Server](https://documentation.red-gate.com/flyway/reference/database-driver-reference/sql-server-database).
+
+```bash
+java -version
+./mvnw --version
+az version
+az account show --query '{tenantId:tenantId,subscription:id,name:name,state:state}'
+```
+
+Si el contexto no existe o expiró, el usuario debe ejecutar `az login` en su terminal
+y seleccionar el tenant/suscripción institucional correctos. No copiar tokens de
+`az account get-access-token`, contraseñas ni cachés al repositorio. La selección debe
+compararse con el contexto autorizado, sin asumir que es la sesión del portal.
+
+La conexión equivalente es:
+
+```text
+jdbc:sqlserver://sql-markettec-dev.database.windows.net:1433;databaseName=sqldb-ms-users-dev;authentication=ActiveDirectoryDefault;encrypt=true;trustServerCertificate=false;hostNameInCertificate=*.database.windows.net
+```
+
+El código configura esas propiedades mediante `SQLServerDataSource`, con timeout y
+verificación del certificado. Nunca habilita confianza indiscriminada del certificado.
+La sonda no inicia Spring ni Flyway y solo ejecuta SELECT:
+
+```bash
+./mvnw --batch-mode compile dependency:build-classpath -Dmdep.outputFile=target/jdbc-classpath.txt
+java -cp "target/classes:$(cat target/jdbc-classpath.txt)" \
+  com.markettec.users.adapters.out.sql.AzureSqlProbe
+```
+
+Comprueba `DB_NAME(), SUSER_SNAME(), USER_NAME()`, base exacta y permisos; publica
+solo presencia de identidades, permisos y número de tablas, sin nombres personales.
+Un fallo imprime SQLState/código/tipos de causa, nunca el mensaje completo de autenticación.
+No obtiene ni imprime tokens. Las librerías pueden emitir diagnóstico de credenciales
+seleccionadas, sin el valor de ningún token.
+
+En esta ejecución el primer intento devolvió `40613`; el segundo conectó y confirmó
+la base exacta y permisos. Un error parecido requiere distinguir pausa/reanudación,
+cuota mensual y disponibilidad antes de reintentar. DNS/firewall/TLS/tenant y permisos
+se diagnostican sin cambiar red, autenticación o recursos automáticamente.
+
+### Flyway y procedimiento seguro para Azure
+
+La migración aditiva `src/main/resources/db/migration/V1__initial_users_schema.sql`
+crea únicamente las tres tablas e índice. No contiene borrados ni reescritura de datos.
+`baselineOnMigrate` no está habilitado y `clean` está deshabilitado en los puntos de uso.
+La única llamada a `migrate()` incluida en el código es la fixture de SQL Server aislado.
+**No se ha ejecutado la primera migración contra Azure ni existe comando de arranque
+que la ejecute. Se requiere autorización explícita posterior para esa ejecución.**
+
+Procedimiento de esa futura intervención autorizada:
+
+1. Ejecutar la sonda JDBC con la misma identidad que hará la migración y confirmar
+   `sqldb-ms-users-dev`, tenant/suscripción y privilegios de migración.
+2. Revisar V1 completa, su checksum, los tipos/índices y su resultado en SQL Server
+   aislado. Esta validación del motor está pendiente; no reemplazarla por pruebas mock.
+3. Inspeccionar **todas** las tablas/esquemas de aplicación y el historial, si existe:
+
+   ```sql
+   SELECT DB_NAME(), SUSER_SNAME(), USER_NAME();
+   SELECT SCHEMA_NAME(schema_id) AS schema_name, name
+   FROM sys.tables WHERE is_ms_shipped = 0;
+   SELECT OBJECT_ID('dbo.flyway_schema_history') AS history_object_id;
+   -- Solo si existe el historial:
+   SELECT installed_rank, version, description, checksum, success
+   FROM dbo.flyway_schema_history ORDER BY installed_rank;
+   ```
+
+4. Confirmar que no hay tablas/datos preexistentes que interfieran; detenerse ante
+   cualquier diferencia. No adoptar automáticamente una base existente con baseline.
+5. Acordar ventana y recuperación. En una base vacía, Flyway debe ejecutar V1 en su
+   transacción SQL Server. Si falla, inspeccionar catálogo/historial sin borrar ni
+   reparar automáticamente. El historial podría existir aunque la migración revierta.
+6. Con autorización explícita y revisión completa, un operador ejecutará Flyway API
+   con el datasource Entra de migración, esquema `dbo`, `cleanDisabled(true)` y
+   `baselineOnMigrate(false)`. No usar el arranque de la aplicación para esa primera vez.
+7. Confirmar historial exitoso, `validate()` y metadatos; después arrancar `sql-dev`
+   con una identidad de aplicación restringida.
+
+No modificar V1 una vez aplicada. Para un defecto posterior, preparar otra migración
+aditiva revisada. Ante datos existentes, coordinar recuperación por el responsable y
+revisar las capacidades de backup/restauración de la oferta antes de autorizar acciones.
+Esta subfase no realiza restauraciones ni crea bases alternativas.
+
+### Privilegios y MTEC-37
+
+La identidad de migración necesita `CREATE TABLE` en la base y `ALTER` en `dbo`, además
+de los permisos necesarios para historial e índices. La identidad de aplicación debe
+restringirse a `SELECT`, `INSERT` y `UPDATE` sobre las tablas necesarias; no requiere
+borrado ni DDL. La validación de arranque también requiere lectura del historial Flyway
+y visibilidad de metadatos/definiciones de las tablas comprobadas. Revisar esas concesiones
+mínimas junto con la estrategia de migración separada. No ejecutar concesiones aquí.
+
+El administrador institucional usado para las comprobaciones no es una credencial
+permanente del servicio. `ActiveDirectoryDefault` ya admite Managed Identity en la
+cadena, pero MTEC-37 debe elegir una identidad de ejecución concreta, restringir la
+selección en producción, conceder permisos mínimos y separar la identidad de migración.
+No se crean identidades, usuarios SQL ni recursos ni se modifican permisos, firewall,
+Entra, políticas, facturación o tamaño de la base en MTEC-35.
+
+La [oferta gratuita de Azure SQL](https://learn.microsoft.com/en-us/azure/azure-sql/database/free-offer?view=azuresql)
+puede pausar la base al agotarse la asignación mensual si tiene `AutoPause`, y puede
+necesitar reanudación al recibir conexiones. No se presupone disponibilidad continua.
+Se verificó `useFreeLimit=true`, `freeLimitExhaustionBehavior=AutoPause` y
+`autoPauseDelay=60`, sin cambiar esa configuración ni habilitar cobros por excedentes.
+
+### Pruebas locales y SQL Server
+
+```bash
+java -version
+./mvnw --batch-mode clean verify
+# Solo con Docker Linux x86-64 nativo y recursos suficientes:
+./mvnw --batch-mode -Psql-integration clean verify
+```
+
+La implementación inicial reportó 105 pruebas normales. La revisión QA conserva las
+**81 originales** y amplía a **30** las de mapeos, transacciones, errores y perfiles:
+**111 pruebas normales**, incluidas las cuatro reglas ArchUnit. Surefire usa el agente
+explícito de Mockito para evitar depender de autoanexión de la JVM. Los mocks no validan
+SQL. El comando normal puede terminar verde sin descubrir ni compilar los casos SQL;
+la validación de persistencia requiere el perfil Maven y su informe Failsafe.
+Los resultados independientes y bloqueos están en [MTEC35_QA_REVIEW.md](docs/MTEC35_QA_REVIEW.md).
+
+El perfil **Maven** `sql-integration` añade `src/sql-test/java` y Failsafe; no confundirlo
+con el perfil Spring del mismo nombre. La fixture crea un contenedor SQL Server 2022
+CU18 nuevo y una base vacía exclusiva, confirma `DB_NAME()`, ejecuta Flyway y verifica
+que repetir migración no aplica nada. No usa Azure. Las credenciales son aleatorias y
+solo de ese contenedor. TLS permanece habilitado: la fixture genera certificado y
+truststore efímeros y verifica el certificado sin confianza indiscriminada. No usa H2,
+credenciales fijas, volúmenes persistentes ni limpieza SQL destructiva.
+
+La suite inicial contenía 24 casos; QA la amplía a 29 y comprueba datos completos,
+consultas por ID/identidad, perfiles, vínculos,
+unicidad real, conflictos, idempotencia, FK, commits/rollback, savepoints, versiones,
+escrituras concurrentes, alta concurrente sin cuentas perdedoras, desactivación,
+checksum/esquema, comparación con memoria y recuperación tras reiniciar tanto el contexto
+Spring como el motor SQL Server. La base efímera usa `SQL_Latin1_General_CP1_CI_AS`, igual
+que Azure. Failsafe falla si no descubre casos en el perfil. No hay pruebas
+SQL marcadas como omitidas automáticamente: un entorno incompatible hace fallar
+explícitamente la preparación.
+
+El equipo de esta ejecución es Apple Silicon ARM64 y Docker no está iniciado. Microsoft
+solo soporta los [contenedores SQL Server sobre Linux Intel/AMD x86-64](https://learn.microsoft.com/en-us/sql/linux/containers/deploy?view=sql-server-ver17).
+La fixture verifica la arquitectura **del motor Docker**, permitiendo un cliente ARM
+con Docker remoto x86-64 nativo; no presupone emulación local. La suite compiló, pero
+los casos SQL y V1 **no se ejecutaron**: no se afirma compatibilidad del esquema por
+haber pasado pruebas Java. Se necesita un host aislado compatible; no se inicia Azure
+ni se configura GitHub Actions para suplirlo.

@@ -4,6 +4,10 @@ server:
 spring:
   application:
     name: ${SERVICE_NAME:ms-users}
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
 
 logging:
   pattern:
