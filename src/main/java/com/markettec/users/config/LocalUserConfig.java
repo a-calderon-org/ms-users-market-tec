@@ -14,7 +14,7 @@ import org.springframework.context.annotation.Profile;
 import java.time.Clock;
 
 @Configuration
-@Profile("local")
+@Profile("(local | in-memory) & !sql-dev & !sql-integration")
 public class LocalUserConfig {
     @Bean
     InMemoryUserStore inMemoryUserStore() {

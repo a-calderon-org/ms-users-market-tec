@@ -1,0 +1,4 @@
+# Only an isolated SQL Server instance; constructed by the integration test fixture.
+users:
+  sql:
+    integration: true
