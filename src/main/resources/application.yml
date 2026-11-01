@@ -1,0 +1,10 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: ${SERVICE_NAME:ms-users}
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} level=%p service=${spring.application.name} logger=%logger{36} %kvp message=\"%m\"%n"
