@@ -492,7 +492,8 @@ Se verificó `useFreeLimit=true`, `freeLimitExhaustionBehavior=AutoPause` y
 java -version
 ./mvnw --batch-mode clean verify
 # Solo con Docker Linux x86-64 nativo y recursos suficientes:
-./mvnw --batch-mode -Psql-integration clean verify
+# Establecer Y únicamente después de aceptar el EULA de SQL Server Developer:
+MTEC35_SQLSERVER_ACCEPT_EULA=Y bash scripts/qa-mtec35-sql.sh
 ```
 
 La implementación inicial reportó 105 pruebas normales. La revisión QA conserva las
@@ -511,7 +512,7 @@ solo de ese contenedor. TLS permanece habilitado: la fixture genera certificado 
 truststore efímeros y verifica el certificado sin confianza indiscriminada. No usa H2,
 credenciales fijas, volúmenes persistentes ni limpieza SQL destructiva.
 
-La suite inicial contenía 24 casos; QA la amplía a 29 y comprueba datos completos,
+La suite inicial contenía 24 casos; QA conserva los 29 recibidos y amplía a 34. Comprueba datos completos,
 consultas por ID/identidad, perfiles, vínculos,
 unicidad real, conflictos, idempotencia, FK, commits/rollback, savepoints, versiones,
 escrituras concurrentes, alta concurrente sin cuentas perdedoras, desactivación,
@@ -524,7 +525,15 @@ explícitamente la preparación.
 El equipo de esta ejecución es Apple Silicon ARM64 y Docker no está iniciado. Microsoft
 solo soporta los [contenedores SQL Server sobre Linux Intel/AMD x86-64](https://learn.microsoft.com/en-us/sql/linux/containers/deploy?view=sql-server-ver17).
 La fixture verifica la arquitectura **del motor Docker**, permitiendo un cliente ARM
-con Docker remoto x86-64 nativo; no presupone emulación local. La suite compiló, pero
-los casos SQL y V1 **no se ejecutaron**: no se afirma compatibilidad del esquema por
-haber pasado pruebas Java. Se necesita un host aislado compatible; no se inicia Azure
-ni se configura GitHub Actions para suplirlo.
+con un motor x86-64 nativo; no presupone emulación local. El modo estricto requiere
+también un cliente Linux x86-64 y publica el puerto SQL solo en `127.0.0.1` del runner.
+El workflow `.github/workflows/qa-mtec35-sql.yml` ejecuta ambas suites sobre
+`ubuntu-24.04` y Java 21 mediante push de la rama MTEC-35. El digest de CU18 está
+fijado, Testcontainers 1.21.4 usa su módulo Microsoft y no se necesitan secrets Azure.
+Los cinco casos añadidos verifican historial Flyway, aislamiento real, deadlock y
+reintento completo, ausencia de replay después de commit real y permisos de un
+runtime SQL restringido exclusivamente local. No certifican una identidad Entra remota.
+El verificador `scripts/verify-mtec35-reports.py` exige 111 casos normales y los 34
+métodos SQL del inventario, todos ejecutados y aprobados sin omisiones. El comando
+normal de Maven continúa siendo válido para desarrollo Mac y no acredita QA SQL.
+El resultado remoto y los enlaces de evidencia constan en `docs/MTEC35_QA_REVIEW.md`.

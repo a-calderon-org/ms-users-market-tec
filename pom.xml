@@ -78,6 +78,7 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
+                    <failIfNoTests>true</failIfNoTests>
                     <!-- Explicit instrumentation works when JVM self-attachment is unavailable. -->
                     <argLine>@{argLine} -javaagent:${org.mockito:mockito-core:jar}</argLine>
                 </configuration>

@@ -1,3 +1,72 @@
+# MTEC-35 — Revalidación con SQL Server aislado en GitHub Actions
+
+Fecha de revisión: 2026-10-31, America/Costa_Rica.
+
+**Dictamen actual: QA PARTIAL — BLOCKED, pendiente de evidencia remota.**
+
+La implementación recibida se preservó en `baa58ff`; HEAD de entrada:
+`db8e352e876a006d8ca5034baae0e4a714e9097d`, rama
+`feat/mtec35-azure-sql-persistence`. No se modificó el worktree MTEC-34.
+
+Se prepara un runner estándar `ubuntu-24.04`, Linux x86-64, Java 21 y Maven wrapper
+3.9.11. Testcontainers 1.21.4 utiliza `MSSQLServerContainer` y la imagen oficial
+`mcr.microsoft.com/mssql/server:2022-CU18-ubuntu-22.04@sha256:ea73825f3d88a23c355ac2f9fdc6bd960fec90171c12c572109b36a558f77bb8`.
+MCR devolvió HTTP 200 y config `linux/amd64` para CU18 y `2022-latest`; se conserva
+CU18 fijada por digest para aislar la validación del motor de un cambio de versión.
+El usuario autorizó expresamente aceptar el EULA de SQL Server 2022 Developer para
+este QA efímero. La fixture exige `MTEC35_SQLSERVER_ACCEPT_EULA=Y`.
+
+Comando estricto real del workflow:
+
+```bash
+MTEC35_SQLSERVER_ACCEPT_EULA=Y bash scripts/qa-mtec35-sql.sh
+# Ejecuta ./mvnw --batch-mode --no-transfer-progress -Psql-integration clean verify
+# y luego python3 scripts/verify-mtec35-reports.py.
+```
+
+El perfil ordinario no descubre SQL por diseño. Activado `sql-integration`, Docker
+no disponible produce error en `@BeforeAll`, no skip. Surefire y Failsafe fallan si
+no descubren pruebas; la puerta adicional exige XML con 111 casos normales y 34
+métodos SQL identificados individualmente, sin errores, fallos ni skipped. No acepta
+un XML de inicialización como un método SQL ejecutado. Un clean impide reutilizar
+informes antiguos. El inventario conserva los 29 métodos recibidos y añade cinco.
+
+Verificación local actual: Java Temurin 21.0.13+9, Maven 3.9.11, 111 normales
+aprobadas (Surefire, cero fallos/errores/omitidas). Los 34 casos SQL compilan. Sin
+variable de aceptación, Failsafe falla expresamente antes de Docker; el verificador
+rechaza ese informe. Esto no constituye ejecución de SQL ni validación de V1.
+
+Correcciones de QA: uso del módulo Microsoft, digest inmutable, puerto aleatorio
+solo en loopback comprobado por inspección, espera por log y SELECT con certificado
+TLS validado, timeouts de arranque/socket/test/job, cleanup de fixture/Ryuk más paso
+final por etiqueta del contenedor. Permisos de workflow `contents: read`; acciones
+oficiales fijadas por SHA, checkout sin credenciales persistentes, sin secrets ni
+OIDC, despliegue, Azure ni autenticación MTEC-36. Push solo de la rama indicada;
+los cambios exclusivos de docs no consumen otra ejecución.
+
+Se conserva SERIALIZABLE: el contrato de UserTransactions exige serialización de
+operaciones que abarcan usuario, perfil e identidad. Se añaden un test del nivel
+real de la sesión y un deadlock determinista de locks compartidos/exclusivos, con
+reintento completo y comprobación de ambos commits. No se cambia el aislamiento
+para reducir tiempos. La frontera es TransactionTemplate, no un proxy @Transactional;
+se comprueba su sesión JDBC y que no queda transacción activa al salir.
+
+Flyway V1, rollback, concurrencia y runtime restringido: **pendientes del runner**.
+Run ID, URL, commit ejecutado, versiones efectivas e inventario definitivo se
+registrarán después de revisar Actions y descargar Surefire/Failsafe.
+
+La identidad SQL restringida de pruebas recibe SELECT/INSERT/UPDATE de las tres
+tablas, SELECT del historial y VIEW DEFINITION. Se comprobarán persistencia y
+validación, y se rechazarán CREATE TABLE, ALTER dbo, DELETE y db_owner. La identidad
+Entra de ejecución en Azure sigue pendiente y está fuera de esta ejecución.
+
+Azure modificado: No. PR creado: No. Jira actualizado: No. Sin migraciones remotas.
+
+<!-- MTEC35_REMOTE_REVIEW_END -->
+
+La sección siguiente conserva la revisión anterior como evidencia histórica. Sus
+recuentos y bloqueos no sustituyen el resultado de la revalidación que encabeza el informe.
+
 # MTEC-35 — QA Review independiente de persistencia SQL
 
 Fecha: 2026-10-31, America/Costa_Rica. Alcance: subfase 2, repositorio

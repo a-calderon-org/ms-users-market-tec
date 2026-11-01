@@ -37,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Real SQL Server only; opt in with -Psql-integration. No H2 and no disabled tests. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Timeout(180)
 class SqlUserStoreIT {
     private final IsolatedSqlServer server = new IsolatedSqlServer();
     private DataSource source;
@@ -48,6 +49,7 @@ class SqlUserStoreIT {
     private final URI photo = URI.create("https://example.invalid/avatar");
 
     @BeforeAll
+    @Timeout(300)
     void migrateOnlyFreshIsolatedDatabase() throws Exception {
         try {
             source = server.start();
@@ -509,6 +511,108 @@ class SqlUserStoreIT {
     @Test
     void schemaValidationRejectsWrongDatabaseWithoutWriting() {
         assertThrows(UserPersistenceException.class, () -> SqlSchemaValidator.validate(source, "wrong_database"));
+    }
+
+    @Test
+    void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
+        var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
+        flyway.validate();
+        assertEquals("1", flyway.info().current().getVersion().getVersion());
+        assertEquals(1, flyway.info().applied().length);
+        assertEquals(0, flyway.info().pending().length);
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
+    }
+
+    @Test
+    void actualJdbcUnitUsesSerializableIsolationWithoutAnAmbientTransaction() {
+        assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+        store.execute(() -> {
+            assertTrue(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            assertEquals(4, jdbc.queryForObject("""
+                    SELECT transaction_isolation_level FROM sys.dm_exec_sessions WHERE session_id=@@SPID
+                    """, Integer.class));
+            assertEquals(1, jdbc.queryForObject("SELECT XACT_STATE()", Integer.class));
+            return null;
+        });
+        assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+    }
+
+    @Test
+    void realDeadlockRollsBackAndRetriesTheCompleteUnit() throws Exception {
+        User one = user();
+        User two = user();
+        store.insert(one);
+        store.insert(two);
+        var gate = new CyclicBarrier(2);
+        var calls = new AtomicInteger();
+        var first = newStore();
+        var second = newStore();
+        var results = concurrent(() -> deadlockingUpdate(first, one, two, gate, calls),
+                () -> deadlockingUpdate(second, two, one, gate, calls));
+        assertEquals(List.of("saved", "saved"), results);
+        assertTrue(calls.get() >= 3, "Opposing shared/exclusive locks must produce a rolled-back victim and retry");
+        assertEquals(1L, version(one));
+        assertEquals(1L, version(two));
+        assertEquals(AccountStatus.DEACTIVATED, store.findById(one.userId()).orElseThrow().status());
+        assertEquals(AccountStatus.DEACTIVATED, store.findById(two.userId()).orElseThrow().status());
+    }
+
+    private String deadlockingUpdate(SqlUserStore unit, User held, User target, CyclicBarrier gate, AtomicInteger calls) {
+        return unit.execute(() -> {
+            unit.findById(held.userId()).orElseThrow();
+            if (calls.incrementAndGet() <= 2) { await(gate); }
+            User current = unit.findById(target.userId()).orElseThrow();
+            unit.replace(current, current.deactivate());
+            return "saved";
+        });
+    }
+
+    @Test
+    void errorReportedAfterRealCommitNeverReplaysCommittedWork() {
+        var manager = new DataSourceTransactionManager(source) {
+            @Override
+            protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus status) {
+                super.doCommit(status);
+                throw new DataAccessResourceFailureException("injected failure after real commit",
+                        new java.sql.SQLException("synthetic retryable code", "40001", 1205));
+            }
+        };
+        var uncertain = new SqlUserStore(new JdbcTemplate(source), manager);
+        var calls = new AtomicInteger();
+        User user = user();
+        assertThrows(UserPersistenceException.class, () -> uncertain.execute(() -> {
+            calls.incrementAndGet();
+            uncertain.insert(user);
+            return null;
+        }));
+        assertEquals(1, calls.get());
+        assertEquals(user, newStore().findById(user.userId()).orElseThrow());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.profiles WHERE user_id=?", Integer.class, user.userId().value()));
+    }
+
+    @Test
+    void restrictedRuntimeCanValidateAndPersistWithoutDdlOrDeletePermissions() throws Exception {
+        var runtime = server.restrictedRuntimeSource();
+        SqlSchemaValidator.validate(runtime, IsolatedSqlServer.DATABASE);
+        var restrictedJdbc = new JdbcTemplate(runtime);
+        var restricted = new SqlUserStore(restrictedJdbc, new DataSourceTransactionManager(runtime));
+        var application = new UserService(restricted, restricted, new UuidUserIdGenerator(), restricted, deny(), clock);
+        var identity = verified();
+        User user = application.registerVerifiedIdentity(identity, details, photo);
+        assertEquals(user, restricted.findById(user.userId()).orElseThrow());
+        assertEquals(user.userId(), restricted.findByKey(identity.key()).orElseThrow().userId());
+        application.updateOwnProfile(user::userId, user.userId(), new ProfileDetails("runtime", "Runtime", ""));
+        application.deactivateUser(user::userId, user.userId());
+        assertEquals(0, restrictedJdbc.queryForObject("SELECT IS_MEMBER('db_owner')", Integer.class));
+        assertEquals(0, restrictedJdbc.queryForObject("SELECT HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'CREATE TABLE')", Integer.class));
+        assertEquals(0, restrictedJdbc.queryForObject("SELECT HAS_PERMS_BY_NAME('dbo', 'SCHEMA', 'ALTER')", Integer.class));
+        assertEquals(0, restrictedJdbc.queryForObject("SELECT HAS_PERMS_BY_NAME('dbo.users', 'OBJECT', 'DELETE')", Integer.class));
+        assertThrows(DataAccessException.class, () -> restrictedJdbc.execute("CREATE TABLE dbo.forbidden_runtime_table(id int)"));
+        assertThrows(DataAccessException.class, () -> restrictedJdbc.update("DELETE FROM dbo.users WHERE user_id=?", user.userId().value()));
     }
 
     private AnnotationConfigApplicationContext context() {

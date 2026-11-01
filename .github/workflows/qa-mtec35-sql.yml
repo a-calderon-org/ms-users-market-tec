@@ -1,0 +1,60 @@
+name: MTEC-35 isolated SQL QA
+
+on:
+  push:
+    branches: [feat/mtec35-azure-sql-persistence]
+    paths-ignore: ['docs/**']
+
+permissions:
+  contents: read
+
+jobs:
+  sql-qa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Authorized explicitly by the repository owner for this ephemeral QA.
+      MTEC35_SQLSERVER_ACCEPT_EULA: 'Y'
+      DOCKER_HOST: unix:///var/run/docker.sock
+      TESTCONTAINERS_HOST_OVERRIDE: 127.0.0.1
+      TESTCONTAINERS_REUSE_ENABLE: 'false'
+      TESTCONTAINERS_RYUK_DISABLED: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Record native runner and Docker versions
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          test "$(uname -m)" = x86_64
+          docker info --format 'Engine={{.OSType}}/{{.Architecture}} Docker={{.ServerVersion}} CPUs={{.NCPU}} Memory={{.MemTotal}}'
+          java -version
+          ./mvnw --version
+      - name: Run normal, architecture and strict SQL tests
+        run: bash scripts/qa-mtec35-sql.sh
+      - name: Reconcile executed cases from Surefire and Failsafe
+        if: always()
+        run: python3 scripts/verify-mtec35-reports.py
+      - name: Remove only containers belonging to this SQL fixture
+        if: always()
+        run: |
+          set -euo pipefail
+          docker ps -aq --filter label=markettec.qa=mtec35 | xargs -r docker rm -f
+          test -z "$(docker ps -aq --filter label=markettec.qa=mtec35)"
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mtec35-qa-${{ github.sha }}
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+            target/mtec35-qa-results.json
+          if-no-files-found: error
+          retention-days: 7
