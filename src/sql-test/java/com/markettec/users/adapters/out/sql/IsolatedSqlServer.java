@@ -96,8 +96,15 @@ final class IsolatedSqlServer implements AutoCloseable {
         var admin = source("master");
         org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(60)).ignoreExceptions()
                 .until(() -> Integer.valueOf(1).equals(new JdbcTemplate(admin).queryForObject("SELECT 1", Integer.class)));
+        var adminJdbc = new JdbcTemplate(admin);
+        String major = adminJdbc.queryForObject("SELECT CONVERT(varchar(8), SERVERPROPERTY('ProductMajorVersion'))", String.class);
+        if (!"16".equals(major)) {
+            throw new IllegalStateException("Strict QA requires SQL Server 2022 (major 16), detected " + major);
+        }
+        String productVersion = adminJdbc.queryForObject("SELECT CONVERT(varchar(128), SERVERPROPERTY('ProductVersion'))", String.class);
         new JdbcTemplate(admin).execute("CREATE DATABASE " + DATABASE + " COLLATE SQL_Latin1_General_CP1_CI_AS");
-        System.out.println("MTEC35 SQL fixture: image=" + IMAGE + "; engine=linux/" + architecture
+        System.out.println("MTEC35 SQL fixture: image=" + container.getDockerImageName() + "; productVersion=" + productVersion
+                + "; engine=linux/" + architecture
                 + "; database=" + DATABASE + "; portBinding=127.0.0.1; TLS certificate verified");
         return source(DATABASE);
     }
@@ -170,7 +177,8 @@ final class IsolatedSqlServer implements AutoCloseable {
     }
 
     private static final class TlsSqlServerContainer extends MSSQLServerContainer<TlsSqlServerContainer> {
-        TlsSqlServerContainer() { super(IMAGE); }
+        // Qualify the outer constant: MSSQLServerContainer also declares an inherited IMAGE field.
+        TlsSqlServerContainer() { super(IsolatedSqlServer.IMAGE); }
 
         @Override
         protected void waitUntilContainerStarted() {

@@ -64,7 +64,17 @@ puede recibir otro puerto en Docker tras restart, mientras Testcontainers conser
 la inspección de arranque. El test de recuperación y los 13 posteriores encontraron
 el endpoint anterior rechazando conexiones. Se corrige la fixture para inspeccionar
 el mapping vigente, comprobar nuevamente loopback y actualizar todos sus datasource.
-No se alteran los 34 métodos ni sus expectativas. Segunda ejecución pendiente.
+No se alteran los 34 métodos ni sus expectativas. La segunda ejecución [41274755407](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41274755407)
+terminó success: 111 normales y 34 SQL aprobadas, cero omitidas. Confirmó el cambio de
+puerto 32769 -> 32770 y la recuperación. **Ese verde no acredita SQL Server 2022**:
+la revisión de los logs identificó que se descargó `mssql/server:latest` y que Flyway
+reportó motor 17.0. La constante heredada `MSSQLServerContainer.IMAGE` ocultaba la
+constante de imagen del fixture dentro de su subclase; `super(IMAGE)` usaba latest.
+Se corrige a `super(IsolatedSqlServer.IMAGE)`, se imprime el nombre real usado por
+Testcontainers y se exige `SERVERPROPERTY('ProductMajorVersion')=16` antes de crear
+la base o ejecutar Flyway. El registro oficial confirma CU18=16.0.4185.3. Los dos
+primeros runs fueron diagnósticos con motor 17 y quedan excluidos como evidencia de
+compatibilidad 2022. Tercera ejecución necesaria y pendiente.
 
 Versiones observadas: Ubuntu 24.04.5 LTS, Linux x86-64, Docker 28.0.4, 2 vCPU,
 8 317 935 616 bytes RAM; Temurin 21.0.13+9, Maven 3.9.11. Cleanup y subida de XML
