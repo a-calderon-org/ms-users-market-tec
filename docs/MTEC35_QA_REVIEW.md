@@ -74,7 +74,14 @@ Se corrige a `super(IsolatedSqlServer.IMAGE)`, se imprime el nombre real usado p
 Testcontainers y se exige `SERVERPROPERTY('ProductMajorVersion')=16` antes de crear
 la base o ejecutar Flyway. El registro oficial confirma CU18=16.0.4185.3. Los dos
 primeros runs fueron diagnósticos con motor 17 y quedan excluidos como evidencia de
-compatibilidad 2022. Tercera ejecución necesaria y pendiente.
+compatibilidad 2022. El tercer run `41275039715` falló antes de iniciar SQL: Testcontainers 1.21.4
+interpreta tag+digest como un nombre de repositorio incompatible con el módulo.
+Se elimina el tag del argumento y se conserva el digest verificado de CU18:
+`mcr.microsoft.com/mssql/server@sha256:ea73825f3d88a23c355ac2f9fdc6bd960fec90171c12c572109b36a558f77bb8`.
+La construcción real de la subclase y la comprobación assertCompatibleWith se
+validaron localmente contra 1.21.4 sin iniciar Docker. Se intentó cancelar ese run
+para ahorrar cómputo, pero ya había finalizado (API 409); no se repitió la cancelación.
+La siguiente ejecución deberá acreditar motor 16 y la suite completa.
 
 Versiones observadas: Ubuntu 24.04.5 LTS, Linux x86-64, Docker 28.0.4, 2 vCPU,
 8 317 935 616 bytes RAM; Temurin 21.0.13+9, Maven 3.9.11. Cleanup y subida de XML

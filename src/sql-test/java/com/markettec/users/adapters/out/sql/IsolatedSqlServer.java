@@ -31,7 +31,8 @@ import java.util.UUID;
 final class IsolatedSqlServer implements AutoCloseable {
     static final String DATABASE = "mtec35_isolated";
     // Verified in MCR as linux/amd64. Pin CU18 by digest instead of a mutable latest tag.
-    static final String IMAGE = "mcr.microsoft.com/mssql/server:2022-CU18-ubuntu-22.04"
+    // Testcontainers 1.21 expects digest-only references (tag+digest changes its parsed repository).
+    static final String IMAGE = "mcr.microsoft.com/mssql/server"
             + "@sha256:ea73825f3d88a23c355ac2f9fdc6bd960fec90171c12c572109b36a558f77bb8";
     private TlsSqlServerContainer container;
     private Path temporary;
