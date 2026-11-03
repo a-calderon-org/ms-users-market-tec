@@ -541,6 +541,40 @@ El resultado remoto y los enlaces de evidencia constan en `docs/MTEC35_QA_REVIEW
 
 ## Fundamentos incrementales de MTEC-36
 
+### Verificador aislado de Google ID tokens (MTEC-36)
+
+`GoogleIdentityVerifier.verify(idToken, GoogleVerificationContext)` devuelve solo
+`issuer`, `subject`, `audience`, `issuedAt` y `expiresAt` después de verificar firma
+RS256 con una clave RSA pública de Google, `kid`, emisor, audiencia, `azp` cuando
+corresponde, `iat`, `exp`, `nbf` si aparece y nonce esperado cuando un componente confiable lo provee.
+No usa correo, `email_verified`, `hd`, nombre ni foto para decidir privilegios.
+Tampoco resuelve `userId`, crea cuentas, emite JWT ni abre sesiones. El contexto
+esperado no debe construirse desde parámetros controlados por el cliente.
+
+El bean está desactivado por defecto. Para un futuro llamador confiable se
+configuran `USERS_GOOGLE_VERIFIER_ENABLED=true` y `USERS_GOOGLE_AUDIENCES` con los
+OAuth client IDs autorizados para el entorno, separados por coma. Un despliegue
+habilitado sin audiencia falla al arrancar. Los dos emisores oficiales son la
+allowlist por defecto; se puede restringir con `USERS_GOOGLE_ISSUERS`.
+`USERS_GOOGLE_CLOCK_SKEW` admite entre 0 y 2 minutos. Las claves se obtienen
+exclusivamente de `https://www.googleapis.com/oauth2/v3/certs`; la configuración
+de fuente rechaza otros hosts/rutas. El caché respeta `Cache-Control: max-age`
+con límite `USERS_GOOGLE_JWKS_MAX_TTL` (máximo 1 hora), no utiliza claves vencidas
+y limita refrescos por `USERS_GOOGLE_JWKS_REFRESH_INTERVAL` (máximo 1 minuto).
+Descargas tienen timeout de 3 segundos, sin redirecciones y máximo 128 KiB.
+La cabecera JOSE nunca decide un destino de red.
+
+Se fija `nimbus-jose-jwt` 10.10 como dependencia directa; una versión anterior estaba presente
+transitivamente por Azure Identity. Google recomienda `GoogleIdTokenVerifier`,
+pero su verificación documentada cubre firma, `aud`, `iss` y `exp`. Nimbus permite
+aplicar la política adicional de este componente y probarla con JWKS sintéticos
+sin depender de Google. No se implementa criptografía propia.
+
+Validar un nonce esperado no consume el intento ni vuelve al token de un solo
+uso. Vinculación al intento, consumo atómico, protección contra replay y prueba
+de autenticación reciente quedan para un protocolo posterior. B04 sigue
+condicionado y D4/D5 siguen Proposed.
+
 **Destinatarios:** mantenedores de ms-users. **Referencia:** contratos Users/identidad
 `0.3.0-draft` del worktree de consolidación de `market_tec`, solo como diseño pendiente
 de aprobación. No se copian ni publican contratos en este repositorio.
@@ -604,7 +638,7 @@ El puerto de gestión es loopback 9091 (`MANAGEMENT_PORT`), sin detalles. Los pe
 añaden validación JDBC bajo demanda a readiness, con caché compartida de 30 s;
 `/health` continúa en el puerto principal. Revisar semántica de readiness en la guía.
 
-El CI existente ahora se activa en `main`, PR hacia `main` o manualmente. Exige 144
+El CI existente ahora se activa en `main`, PR hacia `main` o manualmente. Exige 160
 casos normales, incluidas cuatro reglas ArchUnit y regresiones por nombre, y 34 SQL
 reales sobre Linux x86-64 con Docker. Las 34 SQL del candidato aún están pendientes.
 El comando de desarrollo no ejecuta SQL:

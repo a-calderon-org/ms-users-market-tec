@@ -1,5 +1,5 @@
 {
-  "normal_count": 144,
+  "normal_count": 160,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -38,6 +38,26 @@
     "updatesOnlyTheProfileDetailsAndIncrementsVersion"
   ],
   "required_normal_methods": {
+    "com.markettec.users.adapters.out.google.NimbusGoogleIdentityVerifierTest": [
+      "validTokenExposesOnlyExternalValidatedIdentifiers",
+      "alteredSignatureIsRejected",
+      "noneAndUnexpectedAlgorithmsAreRejected",
+      "unknownAndIncompatibleKeysAreRejected",
+      "issuerAudienceAndAuthorizedPartyAreStrict",
+      "expirationAndIssuedAtAreStrict",
+      "subjectAndNonceAreStrict",
+      "keyRotationAndUnavailableKeysFailClosed",
+      "malformedOversizedAndJoseKeyReferencesAreRejected",
+      "errorsNeverEchoCredential(CapturedOutput)",
+      "policyRejectsUntrustedSourceAndMissingAudience",
+      "configurationFailsClosedWhenDisabledOrIncomplete"
+    ],
+    "com.markettec.users.adapters.out.google.CachedGooglePublicKeysTest": [
+      "cacheHonorsMetadataBoundsAndRefreshesRotatedKeys",
+      "emptyOrUnavailableJwksNeverBecomesTrusted",
+      "boundedSubscriberCancelsOversizedJwksBeforeBufferingIt",
+      "expiredCacheIsDiscardedWhenGoogleStopsResponding"
+    ],
     "com.markettec.users.application.usecases.UserServiceTest": [
       "resolvesLinkedIdentityWithoutChangingAccountOrOriginalEvidence",
       "unknownIdentityDoesNotProvisionOrFallBackToMatchingEmail",

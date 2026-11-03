@@ -21,10 +21,16 @@
         <java.version>21</java.version>
         <archunit.version>1.4.1</archunit.version>
         <azure-identity.version>1.15.3</azure-identity.version>
+        <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
         <argLine/>
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+            <version>${nimbus-jose-jwt.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
