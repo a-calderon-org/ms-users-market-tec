@@ -1,5 +1,5 @@
 {
-  "normal_count": 223,
+  "normal_count": 231,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
