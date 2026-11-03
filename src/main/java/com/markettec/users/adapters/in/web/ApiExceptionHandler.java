@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -26,6 +27,12 @@ public class ApiExceptionHandler {
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     ResponseEntity<ErrorEnvelope> handleMethodNotAllowed(Exception exception, HttpServletRequest request) {
         return safeError(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "The request method is not supported.", request);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    ResponseEntity<ErrorEnvelope> handleUnreadable(HttpMessageNotReadableException exception,
+            HttpServletRequest request) {
+        return safeError(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "The request is invalid.", request);
     }
 
     private ResponseEntity<ErrorEnvelope> safeError(HttpStatus status, String code, String message, HttpServletRequest request) {

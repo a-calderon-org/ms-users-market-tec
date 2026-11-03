@@ -1,5 +1,5 @@
 {
-  "normal_count": 231,
+  "normal_count": 239,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -201,6 +201,18 @@
       "accountInsertFailureRollsBackIntent",
       "reusedNonceFromAnotherAttemptIsRejected",
       "simultaneousConsumptionOfOneAttemptHasOneWinner"
+    ],
+    "com.markettec.users.adapters.in.web.GoogleAuthControllerTest": [
+      "loginAndRegistrationAttemptsKeepPurposeAndPreSessionProofSeparate",
+      "originAndShapeRejectBeforeCreatingAttempt",
+      "continuationRejectsMissingOrWrongPreSessionCsrf",
+      "loginMapsInternalResultAndKeepsRefreshOutOfBody(CapturedOutput)",
+      "registrationUsesOnlyRegistrationServiceAndMapsReplay",
+      "preflightAllowsExactOriginAndHeadersOnly",
+      "enabledConstructorRequiresExplicitVerifiedHttpsTopology"
+    ],
+    "com.markettec.users.adapters.in.web.GoogleHttpDisabledTest": [
+      "defaultApplicationDoesNotExposeGoogleAuthRoutes"
     ]
   }
 }
