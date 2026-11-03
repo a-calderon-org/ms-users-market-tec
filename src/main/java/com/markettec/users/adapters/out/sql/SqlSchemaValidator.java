@@ -122,6 +122,7 @@ public final class SqlSchemaValidator {
         for (String name : List.of("created_ms", "expires_ms", "version"))
             require(columns, "google_login_intents." + name, "bigint:8:false");
         require(columns, "google_login_intents.consumed", "bit:1:false");
+        require(columns, "google_login_intents.purpose", "varchar:16:false");
         var hashes = jdbc.queryForList("""
                 SELECT name FROM sys.computed_columns WHERE object_id=OBJECT_ID('dbo.external_identities')
                     AND is_persisted=1 AND LOWER(definition) LIKE '%hashbytes%sha2_256%'

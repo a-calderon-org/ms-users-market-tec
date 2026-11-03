@@ -4,13 +4,18 @@ import java.time.Instant;
 
 /** Server-issued preauthentication state, independent of B04 attempts. */
 public record GoogleLoginIntent(String attemptId, String nonce, String browserHash,
-                                Instant createdAt, Instant expiresAt, boolean consumed, long version) {
+                                Instant createdAt, Instant expiresAt, boolean consumed, long version, Purpose purpose) {
+    public enum Purpose { LOGIN, REGISTRATION }
+    public GoogleLoginIntent(String attemptId, String nonce, String browserHash,
+                             Instant createdAt, Instant expiresAt, boolean consumed, long version) {
+        this(attemptId, nonce, browserHash, createdAt, expiresAt, consumed, version, Purpose.LOGIN);
+    }
     public GoogleLoginIntent {
         if (attemptId == null || !attemptId.matches("[0-9a-f]{32}")
                 || nonce == null || !nonce.matches("[0-9a-f]{64}")
                 || browserHash == null || !browserHash.matches("[0-9a-f]{64}")
                 || createdAt == null || expiresAt == null || !expiresAt.isAfter(createdAt)
-                || expiresAt.isAfter(createdAt.plusSeconds(300)) || version < 0)
+                || expiresAt.isAfter(createdAt.plusSeconds(300)) || version < 0 || purpose == null)
             throw new IllegalArgumentException("Invalid Google login intent");
     }
 
@@ -18,6 +23,6 @@ public record GoogleLoginIntent(String attemptId, String nonce, String browserHa
 
     public GoogleLoginIntent consume() {
         if (consumed) throw new SessionRejectedException();
-        return new GoogleLoginIntent(attemptId, nonce, browserHash, createdAt, expiresAt, true, version + 1);
+        return new GoogleLoginIntent(attemptId, nonce, browserHash, createdAt, expiresAt, true, version + 1, purpose);
     }
 }

@@ -5,6 +5,8 @@ import com.markettec.users.adapters.out.sql.SqlGoogleLoginIntentRepository;
 import com.markettec.users.adapters.out.sql.SqlUserStore;
 import com.markettec.users.application.ports.out.GoogleIdentityVerifier;
 import com.markettec.users.application.session.GoogleLoginService;
+import com.markettec.users.application.session.GoogleRegistrationService;
+import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.application.session.SessionAuthority;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -24,5 +26,13 @@ public class GoogleLoginConfig {
             @Value("${users.google.login-audience:}") String audience, Clock clock) {
         return new GoogleLoginService(intents, transactions, verifier, sessions, jwt,
                 audience, clock, new SecureRandom());
+    }
+
+    @Bean
+    GoogleRegistrationService googleRegistrationService(SqlGoogleLoginIntentRepository intents,
+            SqlUserStore store, GoogleIdentityVerifier verifier, SessionAuthority sessions,
+            InternalJwtService jwt, @Value("${users.google.login-audience:}") String audience, Clock clock) {
+        return new GoogleRegistrationService(intents, store, verifier, store, store,
+                new UuidUserIdGenerator(), sessions, jwt, audience, clock, new SecureRandom());
     }
 }

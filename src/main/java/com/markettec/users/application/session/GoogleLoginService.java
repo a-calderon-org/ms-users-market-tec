@@ -58,7 +58,7 @@ public final class GoogleLoginService {
             throw new SessionRejectedException();
         return transactions.execute(() -> {
             var intent = intents.loadLocked(attemptId).orElseThrow(SessionRejectedException::new);
-            if (!intent.validAt(now()) || !MessageDigest.isEqual(
+            if (intent.purpose() != GoogleLoginIntent.Purpose.LOGIN || !intent.validAt(now()) || !MessageDigest.isEqual(
                     HexFormat.of().parseHex(intent.browserHash()), HexFormat.of().parseHex(digest(browserSecret))))
                 throw new SessionRejectedException();
             var verified = verifier.verify(idToken, new GoogleVerificationContext(audience, intent.nonce()));

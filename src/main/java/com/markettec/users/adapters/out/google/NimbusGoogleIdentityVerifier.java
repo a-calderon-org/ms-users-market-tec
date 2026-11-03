@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 import java.util.Objects;
+import com.markettec.users.domain.model.Email;
 
 /** Checks the entire Google token before exposing any claims. No account or session access. */
 public final class NimbusGoogleIdentityVerifier implements GoogleIdentityVerifier {
@@ -75,8 +76,12 @@ public final class NimbusGoogleIdentityVerifier implements GoogleIdentityVerifie
                 throw new InvalidGoogleTokenException();
             if (context.expectedNonce() != null && !context.expectedNonce().equals(claims.getStringClaim("nonce")))
                 throw new InvalidGoogleTokenException();
+            Email verifiedEmail = null;
+            if (Boolean.TRUE.equals(claims.getBooleanClaim("email_verified"))) {
+                verifiedEmail = new Email(claims.getStringClaim("email"));
+            }
             return new VerifiedGoogleIdentity(issuer, subject, context.expectedAudience(),
-                    issuedAt.toInstant(), expiration.toInstant());
+                    issuedAt.toInstant(), expiration.toInstant(), verifiedEmail);
         } catch (InvalidGoogleTokenException e) {
             throw e;
         } catch (Exception e) {

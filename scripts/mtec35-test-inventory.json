@@ -1,5 +1,5 @@
 {
-  "normal_count": 212,
+  "normal_count": 223,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -22,6 +22,8 @@
     "flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum",
     "googleLoginIntentIsAtomicAcrossConcurrentSqlExchangesAndRollback",
     "googleLoginRequiresActivePersistedLinkAndAccount",
+    "googleRegistrationIsAtomicAndUniqueUnderConcurrentSqlRequests",
+    "googleRegistrationLinkFailureRollsBackUserProfileAndIntentOnSqlServer",
     "identityKeysAreExactCaseSensitiveAndHaveNoLengthTruncation",
     "linkingAndDeactivationSerializeAcrossConnections",
     "missingIdsAndIdentitiesReturnEmpty",
@@ -184,6 +186,19 @@
       "providerConflictCannotCreateSession",
       "unlinkedIdentityAndSameEmailAccountCannotLoginOrMerge",
       "wrongContextNonceExpiryAndInvalidTokenNeverCreateSession"
+    ],
+    "com.markettec.users.application.session.GoogleRegistrationServiceTest": [
+      "newRegistrationCreatesIsolatedBasicAccountAndOneActiveLink",
+      "invalidTokenNonceBrowserAndExpiryRejectWithoutAccount",
+      "loginIntentCannotRegister",
+      "allHistoricalLinkStatesRejectWithoutMutation",
+      "sameEmailNeverTransfersExistingAccount",
+      "linkFailureRollsBackAccountAndAttempt",
+      "sessionFailureAfterCommitDoesNotPermitDuplicateRegistration",
+      "concurrentRegistrationOfSameIdentityHasOneWinner",
+      "accountInsertFailureRollsBackIntent",
+      "reusedNonceFromAnotherAttemptIsRejected",
+      "simultaneousConsumptionOfOneAttemptHasOneWinner"
     ]
   }
 }

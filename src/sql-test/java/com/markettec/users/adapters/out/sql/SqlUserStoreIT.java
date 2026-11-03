@@ -6,6 +6,7 @@ import com.markettec.users.application.ports.in.UserUseCases;
 import com.markettec.users.application.ports.in.VerifiedExternalIdentity;
 import com.markettec.users.application.session.*;
 import com.markettec.users.application.ports.out.IdentityLinkAuthorization;
+import com.markettec.users.application.ports.out.ExternalIdentityRepository;
 import com.markettec.users.application.ports.out.UserIdGenerator;
 import com.markettec.users.application.usecases.UserService;
 import com.markettec.users.config.ApplicationConfig;
@@ -61,7 +62,7 @@ class SqlUserStoreIT {
                     "SELECT CONVERT(varchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))", String.class));
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(5, flyway.migrate().migrationsExecuted);
+            assertEquals(6, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -542,13 +543,17 @@ class SqlUserStoreIT {
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='5' AND script='V5__external_identity_authorization.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='6' AND script='V6__google_intent_purpose.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
     }
 
     @Test
     void sessionCreationRenewalAndExpiryPersistOnRealSqlServer() {
         var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
                 new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
-        service().registerVerifiedIdentity(proof, details, photo);
+        seedGoogle(proof, Instant.parse("2026-11-03T12:00:00Z"));
         SessionActionAuthorization permit = new SessionActionAuthorization() {
             public void requireRenewal(Session session) { }
             public void requireAdmissibleActivity(Session session) { }
@@ -584,7 +589,7 @@ class SqlUserStoreIT {
     void sessionRevocationAndRenewalSerializeOnRealSqlServer() throws Exception {
         var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
                 new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
-        service().registerVerifiedIdentity(proof, details, photo);
+        seedGoogle(proof, Instant.parse("2026-11-03T12:00:00Z"));
         SessionActionAuthorization permit = new SessionActionAuthorization() {
             public void requireRenewal(Session session) { }
             public void requireAdmissibleActivity(Session session) { }
@@ -618,7 +623,7 @@ class SqlUserStoreIT {
     void sensitiveProfileCommitAndRevocationSerializeOnRealSqlServer() throws Exception {
         var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
                 new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
-        User owner = service().registerVerifiedIdentity(proof, details, photo);
+        User owner = seedGoogle(proof, Instant.parse("2026-11-03T12:00:00Z"));
         Clock sessionClock = Clock.fixed(Instant.parse("2026-11-03T12:00:00Z"), ZoneOffset.UTC);
         Supplier<SessionAuthority> authority = () -> new SessionAuthority(
                 new SqlSessionRepository(jdbc), store, store, store, sessionClock,
@@ -726,6 +731,96 @@ class SqlUserStoreIT {
                     Integer.class, owner.userId().value()));
             assertTrue(store.execute(() -> repo.loadLocked(challenge.attemptId()).orElseThrow().consumed()));
         } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void googleRegistrationIsAtomicAndUniqueUnderConcurrentSqlRequests() throws Exception {
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        Clock fixed = Clock.fixed(now, ZoneOffset.UTC);
+        var identity = new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString());
+        var address = new Email("registration@example.invalid");
+        var repo = new SqlGoogleLoginIntentRepository(jdbc);
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                fixed, new java.security.SecureRandom(), denySessionActions());
+        var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
+            if (!token.equals(context.expectedNonce())) throw new SessionRejectedException();
+            return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
+                    identity.issuer(), identity.subject(), context.expectedAudience(), now,
+                    now.plusSeconds(3600), address);
+        };
+        var registration = new GoogleRegistrationService(repo, store, verifier, store, store,
+                new UuidUserIdGenerator(), authority, authenticated -> "jwt",
+                "sql-client", fixed, new java.security.SecureRandom());
+        int usersBefore = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class);
+        var first = registration.begin();
+        var second = registration.begin();
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            var one = pool.submit(() -> {
+                gate.await();
+                try { registration.complete(first.attemptId(), first.browserSecret(), first.nonce()); return true; }
+                catch (SessionRejectedException | UserPersistenceException rejected) { return false; }
+            });
+            var two = pool.submit(() -> {
+                gate.await();
+                try { registration.complete(second.attemptId(), second.browserSecret(), second.nonce()); return true; }
+                catch (SessionRejectedException | UserPersistenceException rejected) { return false; }
+            });
+            gate.countDown();
+            assertEquals(1, (one.get(20, TimeUnit.SECONDS) ? 1 : 0)
+                    + (two.get(20, TimeUnit.SECONDS) ? 1 : 0));
+        } finally { pool.shutdownNow(); }
+        assertEquals(usersBefore + 1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
+        var linked = store.findByKey(identity).orElseThrow();
+        assertEquals(IdentityLinkStatus.ACTIVE, linked.status());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE user_id=?",
+                Integer.class, linked.userId().value()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.profiles WHERE user_id=?",
+                Integer.class, linked.userId().value()));
+        assertThrows(SessionRejectedException.class,
+                () -> registration.complete(first.attemptId(), first.browserSecret(), first.nonce()));
+    }
+
+    @Test
+    void googleRegistrationLinkFailureRollsBackUserProfileAndIntentOnSqlServer() {
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        Clock fixed = Clock.fixed(now, ZoneOffset.UTC);
+        var identity = new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString());
+        var address = new Email("rollback@example.invalid");
+        var repo = new SqlGoogleLoginIntentRepository(jdbc);
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                fixed, new java.security.SecureRandom(), denySessionActions());
+        var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
+            if (!token.equals(context.expectedNonce())) throw new SessionRejectedException();
+            return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
+                    identity.issuer(), identity.subject(), context.expectedAudience(), now,
+                    now.plusSeconds(3600), address);
+        };
+        ExternalIdentityRepository failingLinks = new ExternalIdentityRepository() {
+            public java.util.Optional<ExternalIdentity> findByKey(ExternalIdentityKey key) {
+                return store.findByKey(key);
+            }
+            public ExternalIdentity insertOrGet(ExternalIdentity link) {
+                store.insertOrGet(link);
+                throw new IllegalStateException("fail after link write");
+            }
+            public void replaceStatus(ExternalIdentity before, IdentityLinkStatus status) {
+                store.replaceStatus(before, status);
+            }
+        };
+        var registration = new GoogleRegistrationService(repo, store, verifier, store, failingLinks,
+                new UuidUserIdGenerator(), authority, authenticated -> "jwt",
+                "sql-client", fixed, new java.security.SecureRandom());
+        int usersBefore = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class);
+        int profilesBefore = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.profiles", Integer.class);
+        var challenge = registration.begin();
+        assertThrows(IllegalStateException.class, () -> registration.complete(
+                challenge.attemptId(), challenge.browserSecret(), challenge.nonce()));
+        assertEquals(usersBefore, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
+        assertEquals(profilesBefore, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.profiles", Integer.class));
+        assertTrue(store.findByKey(identity).isEmpty());
+        assertFalse(store.execute(() -> repo.loadLocked(challenge.attemptId()).orElseThrow().consumed()));
     }
 
     @Test
@@ -983,7 +1078,15 @@ class SqlUserStoreIT {
     }
 
     private ExternalIdentityKey key() { return new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()); }
-    private VerifiedExternalIdentity verified() { return new VerifiedExternalIdentity(IdentityProvider.GOOGLE, key(), email); }
+    private User seedGoogle(VerifiedExternalIdentity proof, Instant now) {
+        return store.execute(() -> {
+            var user = User.create(new UuidUserIdGenerator().nextId(), proof.email(), details, photo, now);
+            store.insert(user);
+            store.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, proof.key(), user.userId(), proof.email()));
+            return user;
+        });
+    }
+    private VerifiedExternalIdentity verified() { return new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, key(), email); }
     private SqlUserStore newStore() { return new SqlUserStore(new JdbcTemplate(source), new DataSourceTransactionManager(source)); }
     private UserService service() { return service(deny()); }
     private UserService service(IdentityLinkAuthorization authorization) {

@@ -71,10 +71,11 @@ class NimbusGoogleIdentityVerifierTest {
         assertEquals(AUD, identity.audience());
         assertEquals(NOW.minusSeconds(30), identity.issuedAt());
         assertEquals(NOW.plusSeconds(300), identity.expiresAt());
-        assertEquals(5, identity.getClass().getRecordComponents().length);
+        assertEquals(6, identity.getClass().getRecordComponents().length);
+        assertEquals("admin@tec.ac.cr", identity.verifiedEmail().address());
         assertFalse(identity.toString().contains("admin@tec.ac.cr"));
-        assertEquals(identity, verifier.verify(token(b -> b.claim("email", "other@example.org")
-                .claim("email_verified", false).claim("hd", "other.example")), context));
+        assertNull(verifier.verify(token(b -> b.claim("email", "other@example.org")
+                .claim("email_verified", false).claim("hd", "other.example")), context).verifiedEmail());
         // No user repository, UserId or JWT issuer is involved in verification.
     }
 
