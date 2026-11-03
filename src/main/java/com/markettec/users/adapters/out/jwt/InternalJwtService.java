@@ -4,6 +4,8 @@ import com.markettec.users.application.session.AuthenticatedSession;
 import com.markettec.users.application.session.Session;
 import com.markettec.users.application.session.SessionAuthority;
 import com.markettec.users.application.session.SessionRejectedException;
+import com.markettec.users.application.ports.in.VerifiedInternalToken;
+import com.markettec.users.application.ports.out.InternalTokenVerifier;
 import com.markettec.users.domain.model.UserId;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -22,7 +24,7 @@ import java.util.List;
 import java.util.Objects;
 
 /** Internal RS256 tokens. Cryptographic validation does not check live session revocation. */
-public final class InternalJwtService {
+public final class InternalJwtService implements InternalTokenVerifier {
     private static final int MAX_TOKEN_CHARS = 8192;
     private final SessionAuthority sessions;
     private final InternalJwtKeyRing keys;
@@ -75,7 +77,7 @@ public final class InternalJwtService {
         }
     }
 
-    public VerifiedToken verify(String compact) {
+    @Override public VerifiedInternalToken verify(String compact) {
         if (compact == null || compact.length() > MAX_TOKEN_CHARS
                 || compact.chars().filter(c -> c == '.').count() != 2
                 || !compact.matches("[A-Za-z0-9_.-]+")) throw new InvalidInternalJwtException();
@@ -104,13 +106,11 @@ public final class InternalJwtService {
                     || !expiry.after(issued) || !now.isBefore(expiry.toInstant())
                     || expiry.toInstant().isAfter(issued.toInstant().plusSeconds(240)))
                 throw new InvalidInternalJwtException();
-            return new VerifiedToken(new UserId(subject), sid, jti, issued.toInstant(), expiry.toInstant());
+            return new VerifiedInternalToken(new UserId(subject), sid, jti, issued.toInstant(), expiry.toInstant());
         } catch (ParseException | JOSEException | IllegalArgumentException exception) {
             throw new InvalidInternalJwtException();
         }
     }
-
-    public record VerifiedToken(UserId userId, String sessionId, String jti, Instant issuedAt, Instant expiresAt) {}
 
     public static final class InvalidInternalJwtException extends RuntimeException {
         public InvalidInternalJwtException() { super("Invalid internal JWT"); }

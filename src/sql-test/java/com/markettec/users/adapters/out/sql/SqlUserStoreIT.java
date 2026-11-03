@@ -603,6 +603,67 @@ class SqlUserStoreIT {
     }
 
     @Test
+    void sensitiveProfileCommitAndRevocationSerializeOnRealSqlServer() throws Exception {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        User owner = service().registerVerifiedIdentity(proof, details, photo);
+        Clock sessionClock = Clock.fixed(Instant.parse("2026-11-03T12:00:00Z"), ZoneOffset.UTC);
+        Supplier<SessionAuthority> authority = () -> new SessionAuthority(
+                new SqlSessionRepository(jdbc), store, store, store, sessionClock,
+                new java.security.SecureRandom(), denySessionActions());
+        Session session = authority.get().create(proof);
+        long versionBefore = jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, session.sessionId());
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var revoking = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var changed = new ProfileDetails("serial", "Serial", "Owner");
+            var operation = pool.submit(() -> authority.get().withCurrentSession(session.sessionId(), owner.userId(), () -> {
+                entered.countDown();
+                try { if (!release.await(15, TimeUnit.SECONDS)) throw new AssertionError("operation timed out"); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new AssertionError(interrupted); }
+                return service().updateOwnProfile(owner::userId, owner.userId(), changed);
+            }));
+            assertTrue(entered.await(15, TimeUnit.SECONDS));
+            var revocation = pool.submit(() -> {
+                revoking.countDown();
+                authority.get().revoke(session.sessionId());
+                return null;
+            });
+            assertTrue(revoking.await(15, TimeUnit.SECONDS));
+            assertThrows(TimeoutException.class, () -> revocation.get(200, TimeUnit.MILLISECONDS));
+            release.countDown();
+            assertEquals(changed, operation.get(30, TimeUnit.SECONDS).details());
+            revocation.get(30, TimeUnit.SECONDS);
+            assertEquals(changed, store.findById(owner.userId()).orElseThrow().profile().details());
+            assertThrows(SessionRejectedException.class, () -> authority.get().withCurrentSession(
+                    session.sessionId(), owner.userId(), () -> service().deactivateUser(owner::userId, owner.userId())));
+            assertEquals(AccountStatus.ACTIVE, store.findById(owner.userId()).orElseThrow().status());
+            assertEquals(versionBefore + 1, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                    Long.class, session.sessionId()));
+            Session expired = authority.get().create(proof);
+            SessionAuthority later = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                    Clock.fixed(sessionClock.instant().plusSeconds(30 * 60), ZoneOffset.UTC),
+                    new java.security.SecureRandom(), denySessionActions());
+            assertThrows(SessionRejectedException.class, () -> later.withCurrentSession(
+                    expired.sessionId(), owner.userId(), () -> service().deactivateUser(owner::userId, owner.userId())));
+            assertEquals(AccountStatus.ACTIVE, store.findById(owner.userId()).orElseThrow().status());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    private static SessionActionAuthorization denySessionActions() {
+        return new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { throw new SessionRejectedException(); }
+            public void requireAdmissibleActivity(Session session) { throw new SessionRejectedException(); }
+        };
+    }
+
+    @Test
     void actualJdbcUnitUsesSerializableIsolationWithoutAnAmbientTransaction() {
         assertFalse(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
         store.execute(() -> {

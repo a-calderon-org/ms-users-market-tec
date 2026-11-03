@@ -1,5 +1,5 @@
 {
-  "normal_count": 189,
+  "normal_count": 194,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -32,12 +32,13 @@
     "retainsCommittedAccountAndIdentityAfterDatabaseEngineRestart",
     "rollsBackAllTablesAfterFailureFollowingAllWrites",
     "schemaValidationRejectsWrongDatabaseWithoutWriting",
+    "sensitiveProfileCommitAndRevocationSerializeOnRealSqlServer",
     "sessionCreationRenewalAndExpiryPersistOnRealSqlServer",
+    "sessionRevocationAndRenewalSerializeOnRealSqlServer",
     "staleAggregateCannotOverwriteCommittedChanges",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",
-    "updatesOnlyTheProfileDetailsAndIncrementsVersion",
-    "sessionRevocationAndRenewalSerializeOnRealSqlServer"
+    "updatesOnlyTheProfileDetailsAndIncrementsVersion"
   ],
   "required_normal_methods": {
     "com.markettec.users.adapters.out.google.NimbusGoogleIdentityVerifierTest": [
@@ -145,6 +146,13 @@
       "rejectsMalformedOversizedAndJoseUrls",
       "cannotIssueFromArbitraryUnauthenticatedIdentity",
       "rejectsWeakIncompleteAndMismatchedKeys"
+    ],
+    "com.markettec.users.application.usecases.ProtectedUserOperationsTest": [
+      "localReadRequiresVerifiedOwnerAndChecksTimeBeforeResult",
+      "invalidTokenAndMissingPermissionNeverReachWork",
+      "sensitiveWorkRequiresAuthorityAndRejectsFailure",
+      "expiryDuringSensitiveWorkRejectsResult",
+      "authorizedSensitiveWorkUsesVerifiedIdentityAndSession"
     ]
   }
 }

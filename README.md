@@ -623,6 +623,24 @@ entrega solo claves públicas; la ruta HTTP queda pendiente del contrato Draft.
 La contención distribuida por compromiso de clave depende de APIM y los demás
 validadores.
 
+### Fase 1C — controles D4/D5 internos
+
+`ProtectedUserOperations` es la frontera programática para consultar o cambiar el
+perfil propio, dar de baja la cuenta y vincular una identidad. Verifica el JWT
+interno y concede únicamente la operación propia enumerada; no acepta identidad,
+sesión ni permisos de encabezados o cuerpo como prueba de autorización. La lectura
+comprueba de nuevo `exp` antes de devolver el resultado. Las escrituras exigen
+sesión vigente en SQL Server y mantienen el bloqueo de su fila durante el cambio
+de cuenta y el commit; una sesión revocada, expirada o inaccesible impide ese cambio.
+Estas comprobaciones no renuevan la sesión. La autorización adicional de vínculo
+continúa cerrada por defecto.
+
+Todavía no hay rutas HTTP protegidas a las que conectar esta frontera. Las rutas
+públicas y de salud siguen anónimas. Tampoco se garantiza la entrega de respuestas
+en streaming tras `exp`, ni la coordinación atómica de commits en otros servicios:
+requieren integración y pruebas en esos límites. D4/D5 son parciales dentro de
+`ms-users`, no controles completos de extremo a extremo.
+
 ### Fases posteriores — Proposed, no iniciadas
 
 La arquitectura base ADR-004, B01 D1–D3, B02/B03 y B05/B06 tienen aprobación
