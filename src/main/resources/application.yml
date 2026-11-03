@@ -11,6 +11,17 @@ spring:
       - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
       - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
 
+# No authentication flow is exposed. The verifier bean is opt-in for a future trusted caller.
+users:
+  google:
+    enabled: ${USERS_GOOGLE_VERIFIER_ENABLED:false}
+    audiences: ${USERS_GOOGLE_AUDIENCES:}
+    issuers: ${USERS_GOOGLE_ISSUERS:https://accounts.google.com,accounts.google.com}
+    clock-skew: ${USERS_GOOGLE_CLOCK_SKEW:30s}
+    jwks-uri: ${USERS_GOOGLE_JWKS_URI:https://www.googleapis.com/oauth2/v3/certs}
+    jwks-max-ttl: ${USERS_GOOGLE_JWKS_MAX_TTL:10m}
+    jwks-refresh-interval: ${USERS_GOOGLE_JWKS_REFRESH_INTERVAL:10s}
+
 # Internal listener. App Service public health check must use /health on the main port.
 management:
   server:
