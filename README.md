@@ -117,6 +117,7 @@ contrato inspeccionado. Si se requiere, deberá acordarse su normalización y un
 |---|---|
 | `createUser` | Aprovisionamiento interno autorizado; genera ID, cuenta y perfil. No autentica ni verifica el correo. Cada llamada crea una cuenta distinta. |
 | `registerVerifiedIdentity` | Adaptador interno que ya verificó identidad y autorizó el aprovisionamiento. Crea cuenta y vínculo en una transacción, o devuelve el usuario activo asociado a la clave existente. |
+| `resolveVerifiedIdentity` | Evidencia de adaptador confiable ya verificada; resuelve solo una cuenta activa vinculada por proveedor y clave exacta, sin crear cuenta, vincular ni modificar datos. Una clave desconocida devuelve vacío, sin buscar por correo. No emite principal ni sesión. |
 | `linkExternalIdentity` | Principal autenticado propietario, evidencia externa verificada y autorización explícita del puerto `IdentityLinkAuthorization` para esa cuenta y esa identidad. |
 | `getOwnProfile` | El `UserId` del principal confiable debe coincidir con el propietario seleccionado. |
 | `updateOwnProfile` | Mismo control de propietario; solo cambia los tres campos de `ProfileDetails`. |
@@ -533,7 +534,54 @@ fijado, Testcontainers 1.21.4 usa su módulo Microsoft y no se necesitan secrets
 Los cinco casos añadidos verifican historial Flyway, aislamiento real, deadlock y
 reintento completo, ausencia de replay después de commit real y permisos de un
 runtime SQL restringido exclusivamente local. No certifican una identidad Entra remota.
-El verificador `scripts/verify-mtec35-reports.py` exige 111 casos normales y los 34
+El verificador `scripts/verify-mtec35-reports.py` exige 118 casos normales y los 34
 métodos SQL del inventario, todos ejecutados y aprobados sin omisiones. El comando
 normal de Maven continúa siendo válido para desarrollo Mac y no acredita QA SQL.
 El resultado remoto y los enlaces de evidencia constan en `docs/MTEC35_QA_REVIEW.md`.
+
+## Fundamentos incrementales de MTEC-36
+
+**Destinatarios:** mantenedores de ms-users. **Referencia:** contratos Users/identidad
+`0.3.0-draft` del worktree de consolidación de `market_tec`, solo como diseño pendiente
+de aprobación. No se copian ni publican contratos en este repositorio.
+
+**Verificado:** se reutilizan `UserId`, `ExternalIdentityKey`, `VerifiedExternalIdentity`,
+`AuthenticatedPrincipal`, los casos de ownership y ambos almacenes/transacciones.
+`resolveVerifiedIdentity` permite consultar una identidad ya vinculada sin invocar
+el aprovisionamiento de `registerVerifiedIdentity`: comprueba proveedor y cuenta activa
+dentro de la misma unidad transaccional. La ausencia de vínculo no autoriza un alta.
+El correo nuevo de la evidencia no reemplaza el perfil ni el vínculo original.
+La consulta no garantiza continuidad de buzón, autenticación criptográfica, sesión
+vigente ni autorización posterior: estos controles pertenecen a adaptadores futuros.
+
+No se añade DTO HTTP: `UserProfile`/`ProfileDetails` conservan los campos previos,
+`UserId` sigue siendo interno y el principal programático requiere solo `userId`.
+El Draft permite ese subconjunto sin acoplar el núcleo a claims JWT inestables.
+Los principales simulados y las concesiones exitosas permanecen exclusivamente en
+pruebas; la composición local y SQL sigue rechazando vínculos por defecto.
+
+Las pruebas nuevas cubren resolución estable sin escrituras, identidad desconocida
+con correo coincidente, issuer/subject exactos, sustitución de proveedor, cuenta
+desactivada, evidencia ausente y rechazo de escrituras sin principal. Complementan
+las 111 pruebas previas; el inventario normal pasa a 118. La suite normal no certifica
+SQL Server real ni APIM, Google o Azure. No se modifican persistencia ni migraciones.
+
+### Fases posteriores — Proposed, no iniciadas
+
+La arquitectura base ADR-004, B01 D1–D3, B02/B03 y B05/B06 tienen aprobación
+delimitada en las fuentes compartidas. Las afirmaciones históricas anteriores de
+este README sobre ADR-004/perfil JWT pendiente corresponden al alcance MTEC-34/35,
+no sustituyen ese registro. **Documentado pero no verificado:** garantías operativas
+de integración. **No determinado:** conformidad efectiva de Azure/APIM.
+
+| Fase propuesta | Funcionalidad pendiente y dependencias |
+|---|---|
+| 1 — Pruebas de identidad externa | Google: verificador criptográfico, issuer/audience configurados, canonicalización, nonce/intento, anti-replay y elegibilidad del buzón. Magic link: transporte de correo, secreto/verificador, consumo único, límites/no enumeración, intento/cookie/CSRF. Ambos requieren protocolos y conformidad B07; el alta/perfil inicial y continuidad B02 necesitan sus interfaces. No usar esta resolución como prueba de control del buzón. |
+| 2 — Sesión y emisión interna | Autoridad durable de sesiones, reloj/deadlines 60/30/8 y emisión ordenada con revocación; JWT RS256/RSA-2048 con `sub=userId`, TTL nominal máximo 240 s, issuer/audience, custodia y JWKS/rotación/frescura. Depende de fase 1, contratos B07, márgenes medidos B01 D3 y decisiones D4/D5 aplicables. |
+| 3 — Refresh, logout y sesión web | Rotación/consumo/reuso atómicos, serialización entre pestañas y respuesta perdida, cookie/CSRF/CORS/topología, snapshot/aviso/continuación y evidencia de actividad B03. Depende de fase 2 y protocolos B06/B07; D4 decide cortes/efectos en vuelo, D5 coordinación y contención crítica. |
+| 4 — Acciones sensibles e integración | Vinculación y logout all requieren evidencia reciente ligada a acción/usuario/sesión y consumo único B04; no basta Google `iat`. D4/D5 siguen Proposed en §§13–14 de `docs/MTEC40_B01_SESSION_REVOCATION_REVIEW.md` del worktree B01. APIM y cada backend requieren conformidad B07, controles de origen y pruebas reales de tiempo/claves/ownership; el incidente MTEC-41 impide afirmar integración productiva asegurada. |
+
+**Próxima funcionalidad propuesta:** verificador Google aislado, después de acordar
+el protocolo de intento/evidencia y parámetros mínimos con B07. La primera versión
+funcional debe incluir también magic link; ninguna fila autoriza implementar D4/D5,
+passkeys o recuperación ni selecciona infraestructura productiva.

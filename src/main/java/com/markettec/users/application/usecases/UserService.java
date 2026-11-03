@@ -9,6 +9,7 @@ import com.markettec.users.domain.model.*;
 import java.net.URI;
 import java.time.Clock;
 import java.util.Objects;
+import java.util.Optional;
 
 import static com.markettec.users.domain.model.UserDomainException.Reason.*;
 
@@ -55,6 +56,15 @@ public final class UserService implements UserUseCases {
                     user.userId(), identity.email()));
             return user;
         });
+    }
+
+    @Override
+    public Optional<UserId> resolveVerifiedIdentity(VerifiedExternalIdentity identity) {
+        Objects.requireNonNull(identity);
+        return transactions.execute(() -> identities.findByKey(identity.key()).map(existing -> {
+            requireSameProvider(existing, identity);
+            return activeUser(existing.userId()).userId();
+        }));
     }
 
     @Override
