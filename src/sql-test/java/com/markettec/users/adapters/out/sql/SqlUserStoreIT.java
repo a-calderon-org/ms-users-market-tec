@@ -519,10 +519,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("5", flyway.info().current().getVersion().getVersion());
-        assertEquals(5, flyway.info().applied().length);
+        assertEquals("6", flyway.info().current().getVersion().getVersion());
+        assertEquals(6, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(5, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(6, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -625,6 +625,8 @@ class SqlUserStoreIT {
                 new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
         User owner = seedGoogle(proof, Instant.parse("2026-11-03T12:00:00Z"));
         Clock sessionClock = Clock.fixed(Instant.parse("2026-11-03T12:00:00Z"), ZoneOffset.UTC);
+        Clock profileClock = Clock.fixed(sessionClock.instant().plusSeconds(1), ZoneOffset.UTC);
+        UserService profileService = new UserService(store, store, new UuidUserIdGenerator(), store, deny(), profileClock);
         Supplier<SessionAuthority> authority = () -> new SessionAuthority(
                 new SqlSessionRepository(jdbc), store, store, store, sessionClock,
                 new java.security.SecureRandom(), denySessionActions());
@@ -641,7 +643,7 @@ class SqlUserStoreIT {
                 entered.countDown();
                 try { if (!release.await(15, TimeUnit.SECONDS)) throw new AssertionError("operation timed out"); }
                 catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new AssertionError(interrupted); }
-                return service().updateOwnProfile(owner::userId, owner.userId(), changed);
+                return profileService.updateOwnProfile(owner::userId, owner.userId(), changed);
             }));
             assertTrue(entered.await(15, TimeUnit.SECONDS));
             var revocation = pool.submit(() -> {
@@ -652,7 +654,9 @@ class SqlUserStoreIT {
             assertTrue(revoking.await(15, TimeUnit.SECONDS));
             assertThrows(TimeoutException.class, () -> revocation.get(200, TimeUnit.MILLISECONDS));
             release.countDown();
-            assertEquals(changed, operation.get(30, TimeUnit.SECONDS).details());
+            UserProfile updated = operation.get(30, TimeUnit.SECONDS);
+            assertEquals(changed, updated.details());
+            assertEquals(profileClock.instant(), updated.fechaActualizacion());
             revocation.get(30, TimeUnit.SECONDS);
             assertEquals(changed, store.findById(owner.userId()).orElseThrow().profile().details());
             assertThrows(SessionRejectedException.class, () -> authority.get().withCurrentSession(
