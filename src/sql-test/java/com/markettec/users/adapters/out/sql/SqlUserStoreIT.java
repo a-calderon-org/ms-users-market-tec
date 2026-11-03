@@ -62,7 +62,7 @@ class SqlUserStoreIT {
                     "SELECT CONVERT(varchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))", String.class));
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(6, flyway.migrate().migrationsExecuted);
+            assertEquals(7, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -519,10 +519,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("6", flyway.info().current().getVersion().getVersion());
-        assertEquals(6, flyway.info().applied().length);
+        assertEquals("7", flyway.info().current().getVersion().getVersion());
+        assertEquals(7, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(6, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(7, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -546,6 +546,10 @@ class SqlUserStoreIT {
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='6' AND script='V6__google_intent_purpose.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='7' AND script='V7__session_credentials.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
     }
 
@@ -617,6 +621,75 @@ class SqlUserStoreIT {
             assertThrows(SessionRejectedException.class, () -> authority.get().renew(session.sessionId()));
             assertTrue(authority.get().current(session.sessionId()).isEmpty());
         } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void opaqueRefreshRotatesOnceAcrossConcurrentSqlTransactionsAndRevocation() throws Exception {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        seedGoogle(proof, now);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        Supplier<SessionAuthority> authority = () -> new SessionAuthority(new SqlSessionRepository(jdbc),
+                store, store, store, Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit);
+        var issued = authority.get().issue(authority.get().createAuthenticated(proof), a -> "jwt");
+        String stored = jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
+                String.class, issued.sessionId());
+        assertEquals(64, stored.trim().length());
+        assertFalse(stored.contains(issued.refreshToken()));
+        authority.get().requireCsrf(issued.sessionId(), new UserId(issued.userId()), issued.csrfToken());
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            Callable<SessionTokens> action = () -> {
+                gate.await();
+                try { return authority.get().refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2"); }
+                catch (SessionRejectedException rejected) { return null; }
+            };
+            var a = pool.submit(action); var b = pool.submit(action);
+            gate.countDown();
+            var first = a.get(30, TimeUnit.SECONDS);
+            var second = b.get(30, TimeUnit.SECONDS);
+            assertEquals(1, (first == null ? 0 : 1) + (second == null ? 0 : 1));
+            var winner = first == null ? second : first;
+            assertThrows(SessionRejectedException.class,
+                    () -> authority.get().requireCsrf(issued.sessionId(), new UserId(issued.userId()), issued.csrfToken()));
+            authority.get().requireCsrf(winner.sessionId(), new UserId(winner.userId()), winner.csrfToken());
+            authority.get().revoke(winner.sessionId());
+            assertNull(jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
+                    String.class, winner.sessionId()));
+            assertThrows(SessionRejectedException.class,
+                    () -> authority.get().refresh(winner.refreshToken(), winner.csrfToken(), x -> "jwt"));
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void failedSqlRefreshRollsBackVerifierAndSessionDeadline() {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        seedGoogle(proof, now);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit);
+        var issued = authority.issue(authority.createAuthenticated(proof), a -> "jwt");
+        String beforeHash = jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
+                String.class, issued.sessionId());
+        long beforeVersion = jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, issued.sessionId());
+        assertThrows(IllegalStateException.class, () -> authority.refresh(issued.refreshToken(), issued.csrfToken(),
+                a -> { throw new IllegalStateException("signer unavailable"); }));
+        assertEquals(beforeHash, jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
+                String.class, issued.sessionId()));
+        assertEquals(beforeVersion, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, issued.sessionId()));
+        authority.refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2");
     }
 
     @Test

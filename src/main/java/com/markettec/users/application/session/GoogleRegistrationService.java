@@ -85,10 +85,12 @@ public final class GoogleRegistrationService {
             return evidence;
         });
         // A failure here never causes a retry of account creation. Login can use a fresh intent.
-        var authenticated = sessions.createGoogle(verified);
-        var token = jwt.issue(authenticated);
-        var session = sessions.current(authenticated.sessionId()).orElseThrow(SessionRejectedException::new);
-        return new GoogleLoginService.Result(token, session.sessionId(), session.userId().value(), session.deadline());
+        return transactions.execute(() -> {
+            var authenticated = sessions.createGoogle(verified);
+            var issued = sessions.issue(authenticated, jwt);
+            return new GoogleLoginService.Result(issued.jwt(), issued.sessionId(), issued.userId(),
+                    issued.sessionDeadline(), issued.refreshToken(), issued.csrfToken());
+        });
     }
 
     private String randomHex(int size) {

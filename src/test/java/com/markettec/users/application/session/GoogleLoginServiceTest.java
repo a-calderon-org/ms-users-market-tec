@@ -21,9 +21,11 @@ class GoogleLoginServiceTest {
     private final InMemoryUserStore users = new InMemoryUserStore();
     private final Map<String, GoogleLoginIntent> intents = new HashMap<>();
     private final Map<String, Session> sessions = new HashMap<>();
+    private final Map<String, SessionVerifiers> credentials = new HashMap<>();
     private final Object lock = new Object();
     private final ExternalIdentityKey key = new ExternalIdentityKey("https://accounts.google.com", "google-sub");
     private boolean failSession;
+    private boolean failJwt;
     private String tokenNonce;
     private boolean invalidToken;
 
@@ -32,10 +34,12 @@ class GoogleLoginServiceTest {
             synchronized (lock) {
                 var oldIntents = new HashMap<>(intents);
                 var oldSessions = new HashMap<>(sessions);
+                var oldCredentials = new HashMap<>(credentials);
                 try { return users.execute(work); }
                 catch (RuntimeException | Error ex) {
                     intents.clear(); intents.putAll(oldIntents);
                     sessions.clear(); sessions.putAll(oldSessions);
+                    credentials.clear(); credentials.putAll(oldCredentials);
                     throw ex;
                 }
             }
@@ -54,7 +58,18 @@ class GoogleLoginServiceTest {
             sessions.put(s.sessionId(), s);
         }
         public Optional<Session> loadLocked(String id) { return Optional.ofNullable(sessions.get(id)); }
+        public Optional<Session> loadByRefreshHashLocked(String hash) {
+            return credentials.entrySet().stream().filter(e -> e.getValue().refreshHash().equals(hash))
+                    .map(e -> sessions.get(e.getKey())).findFirst();
+        }
         public void replace(Session before, Session after) { sessions.put(before.sessionId(), after); }
+        public Optional<SessionVerifiers> verifiers(String id) { return Optional.ofNullable(credentials.get(id)); }
+        public void initializeVerifiers(String id, SessionVerifiers value) {
+            if (credentials.putIfAbsent(id, value) != null) throw new IllegalStateException("duplicate");
+        }
+        public void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next) {
+            if (!credentials.replace(id, old, next)) throw new IllegalStateException("stale");
+        }
     };
     private final GoogleIdentityVerifier verifier = (token, context) -> {
         if (invalidToken || !"valid".equals(token) || !Objects.equals(tokenNonce, context.expectedNonce())
@@ -68,7 +83,8 @@ class GoogleLoginServiceTest {
                     public void requireRenewal(Session s) { throw new SessionRejectedException(); }
                     public void requireAdmissibleActivity(Session s) { throw new SessionRejectedException(); }
                 });
-        return new GoogleLoginService(intentRepo, tx, verifier, authority, authenticated -> "internal-jwt",
+        return new GoogleLoginService(intentRepo, tx, verifier, authority,
+                authenticated -> { if (failJwt) throw new IllegalStateException("signing failed"); return "internal-jwt"; },
                 "client-id", clock, new SecureRandom());
     }
 
@@ -87,6 +103,10 @@ class GoogleLoginServiceTest {
         var result = service().complete(challenge.attemptId(), challenge.browserSecret(), "valid");
         assertEquals(user.userId().value(), result.userId());
         assertEquals("internal-jwt", result.jwt());
+        assertEquals(64, result.refreshToken().length());
+        assertEquals(64, result.csrfToken().length());
+        assertEquals(1, credentials.size());
+        assertFalse(result.toString().contains(result.refreshToken()));
         assertEquals(start.plusSeconds(1800), result.sessionDeadline());
         assertEquals(1, sessions.size());
         assertTrue(intents.get(challenge.attemptId()).consumed());
@@ -167,6 +187,17 @@ class GoogleLoginServiceTest {
         failSession = false;
         service().complete(challenge.attemptId(), challenge.browserSecret(), "valid");
         assertEquals(1, sessions.size());
+    }
+
+    @Test void signingFailureRollsBackGoogleLoginAndCredentialIssuance() {
+        link(); var challenge = service().begin(); tokenNonce = challenge.nonce(); failJwt = true;
+        assertThrows(IllegalStateException.class,
+                () -> service().complete(challenge.attemptId(), challenge.browserSecret(), "valid"));
+        assertFalse(intents.get(challenge.attemptId()).consumed());
+        assertTrue(sessions.isEmpty());
+        assertTrue(credentials.isEmpty());
+        failJwt = false;
+        service().complete(challenge.attemptId(), challenge.browserSecret(), "valid");
     }
 
     @Test void concurrentExchangeHasOneWinner() throws Exception {

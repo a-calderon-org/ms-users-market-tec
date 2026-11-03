@@ -4,12 +4,16 @@ import com.markettec.users.application.ports.in.VerifiedExternalIdentity;
 import com.markettec.users.application.ports.out.ExternalIdentityRepository;
 import com.markettec.users.application.ports.out.UserRepository;
 import com.markettec.users.application.ports.out.UserTransactions;
+import com.markettec.users.application.ports.out.InternalTokenIssuer;
 import com.markettec.users.domain.model.User;
 import com.markettec.users.domain.model.ExternalIdentityKey;
 import com.markettec.users.domain.model.IdentityProvider;
 import com.markettec.users.domain.model.IdentityLinkStatus;
 import com.markettec.users.application.ports.out.VerifiedGoogleIdentity;
 import java.security.SecureRandom;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -122,6 +126,104 @@ public final class SessionAuthority {
             if (!before.revoked()) sessions.replace(before, before.revoke());
             return null;
         });
+    }
+
+    /** Called within the login transaction. No credential escapes before its commit. */
+    public SessionTokens issue(AuthenticatedSession authenticated, InternalTokenIssuer jwt) {
+        Objects.requireNonNull(authenticated);
+        Objects.requireNonNull(jwt);
+        return transactions.execute(() -> {
+            Session session = sessions.loadLocked(authenticated.sessionId()).orElseThrow(SessionRejectedException::new);
+            if (!session.validAt(now())) throw new SessionRejectedException();
+            String refresh = randomHex(32);
+            String csrf = randomHex(32);
+            sessions.initializeVerifiers(session.sessionId(), new SessionVerifiers(hash(refresh), hash(csrf)));
+            return tokens(session, jwt.issue(authenticated), refresh, csrf);
+        });
+    }
+
+    /**
+     * The approved browser adapter must prove an explicit user renewal before this is enabled.
+     * A consumed credential is rejected without grace. It does not revoke an otherwise live
+     * session: replay-triggered revocation is a separate policy decision not approved here.
+     * Refresh and CSRF proofs both rotate on success; neither extends idle or absolute time.
+     */
+    public SessionTokens refresh(String refresh, String csrf, InternalTokenIssuer jwt) {
+        Objects.requireNonNull(jwt);
+        if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
+        return transactions.execute(() -> {
+            Session before = sessions.loadByRefreshHashLocked(hash(refresh)).orElseThrow(SessionRejectedException::new);
+            String id = before.sessionId();
+            if (!before.validAt(now())) throw new SessionRejectedException();
+            SessionVerifiers old = requireCredentials(id, refresh, csrf);
+            authorization.requireRenewal(before);
+            Session after = before.renewAt(now());
+            String nextRefresh = randomHex(32);
+            String nextCsrf = randomHex(32);
+            sessions.rotateVerifiers(id, old, new SessionVerifiers(hash(nextRefresh), hash(nextCsrf)));
+            sessions.replace(before, after);
+            return tokens(after, jwt.issue(new AuthenticatedSession(id)), nextRefresh, nextCsrf);
+        });
+    }
+
+    /** Synchronizer proof is bound to a live session and constant-time compared. */
+    public void requireCsrf(String sessionId, UserId userId, String csrf) {
+        if (sessionId == null || !sessionId.matches("[0-9a-f]{32}") || userId == null || !validSecret(csrf))
+            throw new SessionRejectedException();
+        transactions.execute(() -> {
+            Session session = sessions.loadLocked(sessionId).orElseThrow(SessionRejectedException::new);
+            SessionVerifiers values = sessions.verifiers(sessionId).orElseThrow(SessionRejectedException::new);
+            if (!session.validAt(now()) || !session.userId().equals(userId)
+                    || !equal(values.csrfHash(), hash(csrf)))
+                throw new SessionRejectedException();
+            return null;
+        });
+    }
+
+    /** Logout by the current browser credentials. A consumed refresh cannot log out another session. */
+    public void logout(String refresh, String csrf) {
+        if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
+        transactions.execute(() -> {
+            Session session = sessions.loadByRefreshHashLocked(hash(refresh)).orElseThrow(SessionRejectedException::new);
+            if (!session.validAt(now())) throw new SessionRejectedException();
+            requireCredentials(session.sessionId(), refresh, csrf);
+            sessions.replace(session, session.revoke());
+            return null;
+        });
+    }
+
+    private SessionVerifiers requireCredentials(String id, String refresh, String csrf) {
+        if (!validSecret(csrf)) throw new SessionRejectedException();
+        SessionVerifiers values = sessions.verifiers(id).orElseThrow(SessionRejectedException::new);
+        if (!equal(values.refreshHash(), hash(refresh)) || !equal(values.csrfHash(), hash(csrf)))
+            throw new SessionRejectedException();
+        return values;
+    }
+
+    private static boolean validSecret(String secret) {
+        return secret != null && secret.matches("[0-9a-f]{64}");
+    }
+
+    private String randomHex(int size) {
+        byte[] bytes = new byte[size];
+        random.nextBytes(bytes);
+        return HexFormat.of().formatHex(bytes);
+    }
+
+    private static String hash(String secret) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(secret.getBytes(StandardCharsets.US_ASCII)));
+        } catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    private static boolean equal(String left, String right) {
+        return MessageDigest.isEqual(left.getBytes(StandardCharsets.US_ASCII),
+                right.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    private static SessionTokens tokens(Session session, String jwt, String refresh, String csrf) {
+        return new SessionTokens(jwt, refresh, csrf, session.sessionId(), session.userId().value(), session.deadline());
     }
 
     /** Only an already authorized caller may invoke this; refresh alone is not authorization. */

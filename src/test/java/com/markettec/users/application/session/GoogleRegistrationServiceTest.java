@@ -19,6 +19,7 @@ class GoogleRegistrationServiceTest {
     private final InMemoryUserStore users = new InMemoryUserStore();
     private final Map<String, GoogleLoginIntent> intents = new HashMap<>();
     private final Map<String, Session> sessionRows = new HashMap<>();
+    private final Map<String, SessionVerifiers> credentials = new HashMap<>();
     private final ExternalIdentityKey key = new ExternalIdentityKey("https://accounts.google.com", "new-google-sub");
     private final Email email = new Email("someone@tec.ac.cr");
     private boolean invalidToken, failLink, failSession, failJwt;
@@ -28,10 +29,12 @@ class GoogleRegistrationServiceTest {
         public synchronized <T> T execute(Supplier<T> work) {
             var oldIntents = new HashMap<>(intents);
             var oldSessions = new HashMap<>(sessionRows);
+            var oldCredentials = new HashMap<>(credentials);
             try { return users.execute(work); }
             catch (RuntimeException | Error ex) {
                 intents.clear(); intents.putAll(oldIntents);
                 sessionRows.clear(); sessionRows.putAll(oldSessions);
+                credentials.clear(); credentials.putAll(oldCredentials);
                 throw ex;
             }
         }
@@ -57,7 +60,18 @@ class GoogleRegistrationServiceTest {
             sessionRows.put(session.sessionId(), session);
         }
         public Optional<Session> loadLocked(String id) { return Optional.ofNullable(sessionRows.get(id)); }
+        public Optional<Session> loadByRefreshHashLocked(String hash) {
+            return credentials.entrySet().stream().filter(e -> e.getValue().refreshHash().equals(hash))
+                    .map(e -> sessionRows.get(e.getKey())).findFirst();
+        }
         public void replace(Session before, Session after) { sessionRows.put(before.sessionId(), after); }
+        public Optional<SessionVerifiers> verifiers(String id) { return Optional.ofNullable(credentials.get(id)); }
+        public void initializeVerifiers(String id, SessionVerifiers value) {
+            if (credentials.putIfAbsent(id, value) != null) throw new IllegalStateException("duplicate");
+        }
+        public void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next) {
+            if (!credentials.replace(id, old, next)) throw new IllegalStateException("stale");
+        }
     };
     private final GoogleIdentityVerifier verifier = (token, context) -> {
         if (invalidToken || !(("valid".equals(token) && Objects.equals(expectedNonce, context.expectedNonce()))
@@ -100,6 +114,9 @@ class GoogleRegistrationServiceTest {
         assertEquals(AccountStatus.ACTIVE, user.status());
         assertFalse(user.profile().verificado());
         assertEquals("jwt", result.jwt());
+        assertEquals(64, result.refreshToken().length());
+        assertEquals(64, result.csrfToken().length());
+        assertEquals(1, credentials.size());
         assertEquals(IdentityLinkStatus.ACTIVE, users.findByKey(key).orElseThrow().status());
         assertEquals(result.userId(), users.findByKey(key).orElseThrow().userId().value());
         assertTrue(intents.get(c.attemptId()).consumed());
@@ -168,6 +185,17 @@ class GoogleRegistrationServiceTest {
         failSession = false;
         assertThrows(SessionRejectedException.class, () -> complete(c));
         assertTrue(sessionRows.isEmpty());
+    }
+
+    @Test void signingFailureAfterRegistrationLeavesNoHalfUsableSession() {
+        var c = begin(); failJwt = true;
+        assertThrows(IllegalStateException.class, () -> complete(c));
+        assertTrue(intents.get(c.attemptId()).consumed());
+        assertTrue(users.findByKey(key).isPresent());
+        assertTrue(sessionRows.isEmpty());
+        assertTrue(credentials.isEmpty());
+        failJwt = false;
+        assertThrows(SessionRejectedException.class, () -> complete(c));
     }
 
     @Test void accountInsertFailureRollsBackIntent() {

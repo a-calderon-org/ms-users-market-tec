@@ -65,10 +65,10 @@ public final class GoogleLoginService {
             if (!intent.validAt(now())) throw new SessionRejectedException();
             intents.replace(intent, intent.consume());
             var authenticated = sessions.createGoogle(verified);
-            String token = jwt.issue(authenticated);
-            var session = sessions.current(authenticated.sessionId()).orElseThrow(SessionRejectedException::new);
+            var issued = sessions.issue(authenticated, jwt);
             if (!intent.expiresAt().isAfter(now())) throw new SessionRejectedException();
-            return new Result(token, session.sessionId(), session.userId().value(), session.deadline());
+            return new Result(issued.jwt(), issued.sessionId(), issued.userId(), issued.sessionDeadline(),
+                    issued.refreshToken(), issued.csrfToken());
         });
     }
 
@@ -89,5 +89,10 @@ public final class GoogleLoginService {
 
     /** Browser secret must be delivered through an approved secure browser binding. */
     public record Challenge(String attemptId, String nonce, String browserSecret, Instant expiresAt) { }
-    public record Result(String jwt, String sessionId, String userId, Instant sessionDeadline) { }
+    public record Result(String jwt, String sessionId, String userId, Instant sessionDeadline,
+                         String refreshToken, String csrfToken) {
+        @Override public String toString() {
+            return "Result[credentials=REDACTED, sessionId=" + sessionId + "]";
+        }
+    }
 }

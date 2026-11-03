@@ -30,7 +30,16 @@ class SessionAuthorityTest {
     private SessionAuthority authority(SessionActionAuthorization authorization) {
         UserTransactions atomic = new UserTransactions() {
             public <T> T execute(java.util.function.Supplier<T> work) {
-                synchronized (sessions) { return users.execute(work); }
+                synchronized (sessions) {
+                    var oldData = new HashMap<>(sessions.data);
+                    var oldCredentials = new HashMap<>(sessions.credentials);
+                    try { return users.execute(work); }
+                    catch (RuntimeException | Error failure) {
+                        sessions.data.clear(); sessions.data.putAll(oldData);
+                        sessions.credentials.clear(); sessions.credentials.putAll(oldCredentials);
+                        throw failure;
+                    }
+                }
             }
         };
         return new SessionAuthority(sessions, users, users, atomic, clock, new SecureRandom(), authorization);
@@ -171,6 +180,116 @@ class SessionAuthorityTest {
         } finally { pool.shutdownNow(); }
     }
 
+    @Test void issuesOpaqueCredentialsAndSessionBoundCsrfWithoutPersistingSecrets() {
+        create();
+        var first = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        var second = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt2");
+        assertEquals(64, first.refreshToken().length());
+        assertNotEquals(first.refreshToken(), second.refreshToken());
+        assertNotEquals(first.csrfToken(), second.csrfToken());
+        assertFalse(sessions.verifiers(first.sessionId()).orElseThrow().toString().contains(first.refreshToken()));
+        assertFalse(sessions.verifiers(first.sessionId()).orElseThrow().toString().contains(first.csrfToken()));
+        assertFalse(first.toString().contains(first.refreshToken()));
+        authority(allow).requireCsrf(first.sessionId(), new UserId(first.userId()), first.csrfToken());
+        assertThrows(SessionRejectedException.class, () -> authority(allow).requireCsrf(first.sessionId(),
+                new UuidUserIdGenerator().nextId(), first.csrfToken()));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).requireCsrf(first.sessionId(),
+                new UserId(first.userId()), second.csrfToken()));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).requireCsrf(first.sessionId(),
+                new UserId(first.userId()), null));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).requireCsrf(first.sessionId(),
+                new UserId(first.userId()), "0".repeat(64)));
+    }
+
+    @Test void refreshRotatesBothCredentialsAndRejectsReplayOrCrossSession() {
+        create();
+        var first = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        var other = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        var idleBefore = sessions.loadLocked(first.sessionId()).orElseThrow().idleUntil();
+        var next = authority(allow).refresh(first.refreshToken(), first.csrfToken(), a -> "next-jwt");
+        assertEquals("next-jwt", next.jwt());
+        assertEquals(first.sessionId(), next.sessionId());
+        assertNotEquals(first.refreshToken(), next.refreshToken());
+        assertNotEquals(first.csrfToken(), next.csrfToken());
+        assertEquals(idleBefore, sessions.loadLocked(first.sessionId()).orElseThrow().idleUntil());
+        assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(first.refreshToken(), first.csrfToken(), a -> "jwt"));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(next.refreshToken(), other.csrfToken(), a -> "jwt"));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).requireCsrf(first.sessionId(),
+                new UserId(first.userId()), first.csrfToken()));
+        authority(allow).requireCsrf(first.sessionId(), new UserId(first.userId()), next.csrfToken());
+        assertFalse(sessions.loadLocked(first.sessionId()).orElseThrow().revoked());
+    }
+
+    @Test void concurrentRefreshAllowsExactlyOneWinner() throws Exception {
+        create();
+        var first = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            Callable<Boolean> action = () -> {
+                gate.await();
+                try { authority(allow).refresh(first.refreshToken(), first.csrfToken(), a -> "jwt"); return true; }
+                catch (SessionRejectedException ignored) { return false; }
+            };
+            var a = pool.submit(action); var b = pool.submit(action);
+            gate.countDown();
+            assertNotEquals(a.get(5, TimeUnit.SECONDS), b.get(5, TimeUnit.SECONDS));
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test void refreshRollbackRestoresPreviousCredentialAndSession() {
+        create();
+        var first = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        var before = sessions.loadLocked(first.sessionId()).orElseThrow();
+        assertThrows(IllegalStateException.class, () -> authority(allow).refresh(first.refreshToken(), first.csrfToken(),
+                a -> { throw new IllegalStateException("signing failed"); }));
+        assertEquals(before, sessions.loadLocked(first.sessionId()).orElseThrow());
+        authority(allow).refresh(first.refreshToken(), first.csrfToken(), a -> "jwt");
+    }
+
+    @Test void logoutAndRevocationDestroyCredentialsWithoutRevivingExpiry() {
+        create();
+        var first = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        authority(allow).logout(first.refreshToken(), first.csrfToken());
+        assertTrue(sessions.verifiers(first.sessionId()).isEmpty());
+        assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(first.refreshToken(), first.csrfToken(), a -> "jwt"));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).requireCsrf(first.sessionId(),
+                new UserId(first.userId()), first.csrfToken()));
+        var second = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        authority(allow).revoke(second.sessionId());
+        assertTrue(sessions.verifiers(second.sessionId()).isEmpty());
+        clock.set(start.plusSeconds(1800));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(second.refreshToken(), second.csrfToken(), a -> "jwt"));
+    }
+
+    @Test void refreshHonorsIdleWindowAndAbsoluteDeadlines() {
+        create();
+        var idle = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        clock.set(start.plusSeconds(1800));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(idle.refreshToken(), idle.csrfToken(), a -> "jwt"));
+
+        clock.set(start);
+        var window = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        clock.set(start.plusSeconds(29 * 60));
+        authority(allow).recordAdmissibleActivity(window.sessionId());
+        clock.set(start.plusSeconds(58 * 60));
+        authority(allow).recordAdmissibleActivity(window.sessionId());
+        clock.set(start.plusSeconds(60 * 60));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(window.refreshToken(), window.csrfToken(), a -> "jwt"));
+
+        clock.set(start);
+        var active = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        for (int minute = 29; minute < 480; minute += 29) {
+            clock.set(start.plusSeconds(minute * 60L));
+            authority(allow).recordAdmissibleActivity(active.sessionId());
+            active = authority(allow).refresh(active.refreshToken(), active.csrfToken(), a -> "jwt");
+            assertFalse(active.sessionDeadline().isAfter(start.plusSeconds(8 * 3600)));
+        }
+        var last = active;
+        clock.set(start.plusSeconds(8 * 3600));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(last.refreshToken(), last.csrfToken(), a -> "jwt"));
+    }
+
     private static final class MutableClock extends Clock {
         private volatile Instant instant;
         MutableClock(Instant instant) { this.instant = instant; }
@@ -182,12 +301,28 @@ class SessionAuthorityTest {
 
     private static final class MemorySessions implements SessionRepository {
         private final Map<String, Session> data = new HashMap<>();
+        private final Map<String, SessionVerifiers> credentials = new HashMap<>();
         volatile boolean fail;
         public synchronized void insert(Session s) { check(); data.put(s.sessionId(), s); }
         public synchronized Optional<Session> loadLocked(String id) { check(); return Optional.ofNullable(data.get(id)); }
+        public synchronized Optional<Session> loadByRefreshHashLocked(String hash) {
+            check();
+            return credentials.entrySet().stream().filter(e -> e.getValue().refreshHash().equals(hash))
+                    .map(e -> data.get(e.getKey())).findFirst();
+        }
         public synchronized void replace(Session old, Session next) {
             check();
             if (!data.replace(old.sessionId(), old, next)) throw new IllegalStateException("stale");
+            if (next.revoked()) credentials.remove(old.sessionId());
+        }
+        public synchronized Optional<SessionVerifiers> verifiers(String id) { check(); return Optional.ofNullable(credentials.get(id)); }
+        public synchronized void initializeVerifiers(String id, SessionVerifiers value) {
+            check();
+            if (credentials.putIfAbsent(id, value) != null) throw new IllegalStateException("duplicate");
+        }
+        public synchronized void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next) {
+            check();
+            if (!credentials.replace(id, old, next)) throw new IllegalStateException("stale");
         }
         private void check() { if (fail) throw new IllegalStateException("store unavailable"); }
     }
