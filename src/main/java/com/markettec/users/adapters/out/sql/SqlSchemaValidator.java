@@ -21,7 +21,8 @@ public final class SqlSchemaValidator {
         Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true)
                 .baselineOnMigrate(false).load().validate();
         Map<String, List<String>> primaryKeys = Map.of("users", List.of("user_id"),
-                "profiles", List.of("user_id"), "external_identities", List.of("issuer_hash", "subject_hash"));
+                "profiles", List.of("user_id"), "external_identities", List.of("issuer_hash", "subject_hash"),
+                "sessions", List.of("session_id"));
         primaryKeys.forEach((table, expected) -> {
             var actual = jdbc.queryForList("""
                     SELECT c.name FROM sys.indexes i
@@ -38,23 +39,25 @@ public final class SqlSchemaValidator {
                 SELECT name FROM sys.foreign_keys WHERE referenced_object_id=OBJECT_ID('dbo.users')
                     AND is_disabled=0 AND is_not_trusted=0 AND delete_referential_action=0
                 """, String.class));
-        if (!foreignKeys.containsAll(Set.of("fk_profiles_user", "fk_external_identities_user"))) {
+        if (!foreignKeys.containsAll(Set.of("fk_profiles_user", "fk_external_identities_user", "fk_sessions_user"))) {
             throw new UserPersistenceException("Missing SQL referential constraints");
         }
         var checks = Set.copyOf(jdbc.queryForList("""
                 SELECT name FROM sys.check_constraints WHERE is_disabled=0 AND is_not_trusted=0
                     AND parent_object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'),
-                        OBJECT_ID('dbo.external_identities'))
+                        OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'))
                 """, String.class));
         if (!checks.containsAll(Set.of("ck_users_status", "ck_users_version", "ck_profiles_registered",
-                "ck_profiles_updated", "ck_external_identities_provider"))) {
+                "ck_profiles_updated", "ck_external_identities_provider", "ck_sessions_version",
+                "ck_sessions_deadlines"))) {
             throw new UserPersistenceException("Missing SQL check constraints");
         }
         // Verify names, types, lengths and NOT NULL using engine metadata. No DDL is issued.
         Map<String, String> columns = jdbc.query("""
                 SELECT OBJECT_NAME(c.object_id) AS table_name, c.name, TYPE_NAME(c.user_type_id) AS type_name,
                     c.max_length, c.is_nullable FROM sys.columns c
-                WHERE c.object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'), OBJECT_ID('dbo.external_identities'))
+                WHERE c.object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'),
+                    OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'))
                 """, (rs, row) -> Map.entry(rs.getString("table_name") + "." + rs.getString("name"),
                 rs.getString("type_name") + ":" + rs.getInt("max_length") + ":" + rs.getBoolean("is_nullable")))
                 .stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
@@ -79,6 +82,13 @@ public final class SqlSchemaValidator {
         require(columns, "external_identities.user_id", "varchar:40:false");
         require(columns, "external_identities.provider", "varchar:24:false");
         require(columns, "external_identities.verified_email", "varchar:254:false");
+        require(columns, "sessions.session_id", "char:32:false");
+        require(columns, "sessions.user_id", "varchar:40:false");
+        for (String name : List.of("created_ms", "renewable_until_ms", "last_activity_ms",
+                "idle_until_ms", "absolute_until_ms", "version")) {
+            require(columns, "sessions." + name, "bigint:8:false");
+        }
+        require(columns, "sessions.revoked", "bit:1:false");
         var hashes = jdbc.queryForList("""
                 SELECT name FROM sys.computed_columns WHERE object_id=OBJECT_ID('dbo.external_identities')
                     AND is_persisted=1 AND LOWER(definition) LIKE '%hashbytes%sha2_256%'

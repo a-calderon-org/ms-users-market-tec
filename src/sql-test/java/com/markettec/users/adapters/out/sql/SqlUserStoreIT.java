@@ -4,6 +4,7 @@ import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.memory.InMemoryUserStore;
 import com.markettec.users.application.ports.in.UserUseCases;
 import com.markettec.users.application.ports.in.VerifiedExternalIdentity;
+import com.markettec.users.application.session.*;
 import com.markettec.users.application.ports.out.IdentityLinkAuthorization;
 import com.markettec.users.application.ports.out.UserIdGenerator;
 import com.markettec.users.application.usecases.UserService;
@@ -60,7 +61,7 @@ class SqlUserStoreIT {
                     "SELECT CONVERT(varchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))", String.class));
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(1, flyway.migrate().migrationsExecuted);
+            assertEquals(2, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -517,14 +518,48 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("1", flyway.info().current().getVersion().getVersion());
-        assertEquals(1, flyway.info().applied().length);
+        assertEquals("2", flyway.info().current().getVersion().getVersion());
+        assertEquals(2, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
+    }
+
+    @Test
+    void sessionRevocationAndRenewalSerializeOnRealSqlServer() throws Exception {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        service().registerVerifiedIdentity(proof, details, photo);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        Clock sessionClock = Clock.fixed(Instant.parse("2026-11-03T12:00:00Z"), ZoneOffset.UTC);
+        Supplier<SessionAuthority> authority = () -> new SessionAuthority(
+                new SqlSessionRepository(jdbc), store, store, store, sessionClock,
+                new java.security.SecureRandom(), permit);
+        Session session = authority.get().create(proof);
+        assertTrue(authority.get().current(session.sessionId()).isPresent());
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            var renewal = pool.submit(() -> {
+                gate.await();
+                try { authority.get().renew(session.sessionId()); }
+                catch (SessionRejectedException ignored) { }
+                return null;
+            });
+            var revocation = pool.submit(() -> { gate.await(); authority.get().revoke(session.sessionId()); return null; });
+            gate.countDown();
+            renewal.get(30, TimeUnit.SECONDS);
+            revocation.get(30, TimeUnit.SECONDS);
+            assertTrue(authority.get().current(session.sessionId()).isEmpty());
+            assertThrows(SessionRejectedException.class, () -> authority.get().renew(session.sessionId()));
+            assertTrue(authority.get().current(session.sessionId()).isEmpty());
+        } finally { pool.shutdownNow(); }
     }
 
     @Test

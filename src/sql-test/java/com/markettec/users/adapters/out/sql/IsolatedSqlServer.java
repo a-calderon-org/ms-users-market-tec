@@ -150,7 +150,7 @@ final class IsolatedSqlServer implements AutoCloseable {
                 """, runtimePassword);
         var admin = new JdbcTemplate(source(DATABASE));
         admin.execute("CREATE USER mtec35_runtime FOR LOGIN mtec35_runtime");
-        for (String table : new String[]{"users", "profiles", "external_identities"}) {
+        for (String table : new String[]{"users", "profiles", "external_identities", "sessions"}) {
             admin.execute("GRANT SELECT, INSERT, UPDATE ON OBJECT::dbo." + table + " TO mtec35_runtime");
         }
         admin.execute("GRANT SELECT ON OBJECT::dbo.flyway_schema_history TO mtec35_runtime");
