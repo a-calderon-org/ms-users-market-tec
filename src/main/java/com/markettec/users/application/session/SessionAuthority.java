@@ -5,6 +5,9 @@ import com.markettec.users.application.ports.out.ExternalIdentityRepository;
 import com.markettec.users.application.ports.out.UserRepository;
 import com.markettec.users.application.ports.out.UserTransactions;
 import com.markettec.users.domain.model.User;
+import com.markettec.users.domain.model.ExternalIdentityKey;
+import com.markettec.users.domain.model.IdentityProvider;
+import com.markettec.users.application.ports.out.VerifiedGoogleIdentity;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
@@ -56,6 +59,23 @@ public final class SessionAuthority {
     /** Mint a trusted issuance capability as part of the verified login path. */
     public AuthenticatedSession createAuthenticated(VerifiedExternalIdentity evidence) {
         return new AuthenticatedSession(create(evidence).sessionId());
+    }
+
+    /** Google subject resolves only through an existing exact issuer/subject link. */
+    public AuthenticatedSession createGoogle(VerifiedGoogleIdentity evidence) {
+        Objects.requireNonNull(evidence);
+        return transactions.execute(() -> {
+            var key = new ExternalIdentityKey(evidence.issuer(), evidence.subject());
+            var linked = identities.findByKey(key).orElseThrow(SessionRejectedException::new);
+            if (linked.provider() != IdentityProvider.GOOGLE) throw new SessionRejectedException();
+            User user = users.findById(linked.userId()).orElseThrow(SessionRejectedException::new);
+            user.requireActive();
+            byte[] bytes = new byte[16];
+            random.nextBytes(bytes);
+            Session session = Session.start(HexFormat.of().formatHex(bytes), user.userId(), now());
+            sessions.insert(session);
+            return new AuthenticatedSession(session.sessionId());
+        });
     }
 
     /** Reauthenticate an existing session using trusted, freshly verified identity evidence. */

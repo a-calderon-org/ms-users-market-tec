@@ -1,5 +1,5 @@
 {
-  "normal_count": 204,
+  "normal_count": 209,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -43,7 +43,8 @@
     "staleAggregateCannotOverwriteCommittedChanges",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",
-    "updatesOnlyTheProfileDetailsAndIncrementsVersion"
+    "updatesOnlyTheProfileDetailsAndIncrementsVersion",
+    "googleLoginIntentIsAtomicAcrossConcurrentSqlExchangesAndRollback"
   ],
   "required_normal_methods": {
     "com.markettec.users.application.session.InstitutionalEmailProofTest": [
@@ -172,6 +173,13 @@
       "futureMissingAndWrongEvidenceReject",
       "mutationFailureRollsBackConsumption",
       "sessionRejectionAndMissingVerifierFailClosed"
+    ],
+    "com.markettec.users.application.session.GoogleLoginServiceTest": [
+      "linkedGoogleIdentityCreatesOneSessionAndInternalIdentity",
+      "wrongContextNonceExpiryAndInvalidTokenNeverCreateSession",
+      "unlinkedIdentityAndSameEmailAccountCannotLoginOrMerge",
+      "persistenceFailureRollsBackConsumptionAndSession",
+      "concurrentExchangeHasOneWinner"
     ]
   }
 }

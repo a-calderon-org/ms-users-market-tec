@@ -61,7 +61,7 @@ class SqlUserStoreIT {
                     "SELECT CONVERT(varchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))", String.class));
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(3, flyway.migrate().migrationsExecuted);
+            assertEquals(4, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -518,10 +518,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("3", flyway.info().current().getVersion().getVersion());
-        assertEquals(3, flyway.info().applied().length);
+        assertEquals("4", flyway.info().current().getVersion().getVersion());
+        assertEquals(4, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(3, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -533,6 +533,10 @@ class SqlUserStoreIT {
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='3' AND script='V3__recent_authentication_attempts.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='4' AND script='V4__google_login_intents.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
     }
 
@@ -665,6 +669,59 @@ class SqlUserStoreIT {
             public void requireRenewal(Session session) { throw new SessionRejectedException(); }
             public void requireAdmissibleActivity(Session session) { throw new SessionRejectedException(); }
         };
+    }
+
+    @Test
+    void googleLoginIntentIsAtomicAcrossConcurrentSqlExchangesAndRollback() throws Exception {
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        Clock fixed = Clock.fixed(now, ZoneOffset.UTC);
+        Email verifiedEmail = new Email("google-login@example.invalid");
+        User owner = User.create(new UuidUserIdGenerator().nextId(), verifiedEmail,
+                new ProfileDetails("google-login", "Google", "Login"), URI.create("https://example.invalid/a"), now);
+        var key = new ExternalIdentityKey("https://accounts.google.com", "sql-google-login-sub");
+        store.execute(() -> {
+            store.insert(owner);
+            store.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, key, owner.userId(), verifiedEmail));
+            return null;
+        });
+        var repo = new SqlGoogleLoginIntentRepository(jdbc);
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                fixed, new java.security.SecureRandom(), denySessionActions());
+        var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
+            if (!token.equals(context.expectedNonce())) throw new SessionRejectedException();
+            return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
+                    key.issuer(), key.subject(), context.expectedAudience(), now, now.plusSeconds(3600));
+        };
+        var service = new GoogleLoginService(repo, store, verifier, authority,
+                authenticated -> "signed-internal-jwt", "sql-client", fixed, new java.security.SecureRandom());
+        var rollback = service.begin();
+        var failing = new GoogleLoginService(repo, store, verifier, authority,
+                authenticated -> { throw new IllegalStateException("signing failed"); },
+                "sql-client", fixed, new java.security.SecureRandom());
+        assertThrows(IllegalStateException.class,
+                () -> failing.complete(rollback.attemptId(), rollback.browserSecret(), rollback.nonce()));
+        assertFalse(store.execute(() -> repo.loadLocked(rollback.attemptId()).orElseThrow().consumed()));
+        assertEquals("signed-internal-jwt",
+                service.complete(rollback.attemptId(), rollback.browserSecret(), rollback.nonce()).jwt());
+
+        var challenge = service.begin();
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            java.util.concurrent.Callable<Boolean> exchange = () -> {
+                gate.await();
+                try { service.complete(challenge.attemptId(), challenge.browserSecret(), challenge.nonce()); return true; }
+                catch (SessionRejectedException rejected) { return false; }
+            };
+            var first = pool.submit(exchange);
+            var second = pool.submit(exchange);
+            gate.countDown();
+            assertEquals(1, (first.get(20, TimeUnit.SECONDS) ? 1 : 0)
+                    + (second.get(20, TimeUnit.SECONDS) ? 1 : 0));
+            assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.sessions WHERE user_id=?",
+                    Integer.class, owner.userId().value()));
+            assertTrue(store.execute(() -> repo.loadLocked(challenge.attemptId()).orElseThrow().consumed()));
+        } finally { pool.shutdownNow(); }
     }
 
     private record RecentFixture(User user, Session session, RecentAttempt attempt,

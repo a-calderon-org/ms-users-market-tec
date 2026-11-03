@@ -6,6 +6,7 @@ import com.markettec.users.application.session.SessionAuthority;
 import com.markettec.users.application.session.SessionRejectedException;
 import com.markettec.users.application.ports.in.VerifiedInternalToken;
 import com.markettec.users.application.ports.out.InternalTokenVerifier;
+import com.markettec.users.application.ports.out.InternalTokenIssuer;
 import com.markettec.users.domain.model.UserId;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -24,7 +25,7 @@ import java.util.List;
 import java.util.Objects;
 
 /** Internal RS256 tokens. Cryptographic validation does not check live session revocation. */
-public final class InternalJwtService implements InternalTokenVerifier {
+public final class InternalJwtService implements InternalTokenVerifier, InternalTokenIssuer {
     private static final int MAX_TOKEN_CHARS = 8192;
     private final SessionAuthority sessions;
     private final InternalJwtKeyRing keys;
