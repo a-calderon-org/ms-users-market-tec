@@ -1,5 +1,5 @@
 {
-  "normal_count": 137,
+  "normal_count": 144,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -38,6 +38,15 @@
     "updatesOnlyTheProfileDetailsAndIncrementsVersion"
   ],
   "required_normal_methods": {
+    "com.markettec.users.application.usecases.UserServiceTest": [
+      "resolvesLinkedIdentityWithoutChangingAccountOrOriginalEvidence",
+      "unknownIdentityDoesNotProvisionOrFallBackToMatchingEmail",
+      "resolutionRequiresExactIssuerAndSubjectRatherThanAnInternalId",
+      "resolutionRejectsProviderSubstitutionWithoutChangingTheLink",
+      "resolutionRejectsDeactivatedAccountAndKeepsItsIdentityReserved",
+      "resolutionRejectsMissingIdentityEvidence",
+      "missingPrincipalRejectsEveryOwnedWriteWithoutChangingData"
+    ],
     "HexagonalArchitectureTest": [
       "dependenciesPointInward",
       "domainIsFrameworkIndependent",

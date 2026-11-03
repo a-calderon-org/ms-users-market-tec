@@ -80,6 +80,86 @@ class UserServiceTest {
     }
 
     @Test
+    void resolvesLinkedIdentityWithoutChangingAccountOrOriginalEvidence() {
+        var original = google("linked");
+        User user = service.registerVerifiedIdentity(original, DETAILS, PHOTO);
+        var changedEmail = new VerifiedExternalIdentity(original.provider(), original.key(),
+                new Email("changed@estudiantec.cr"));
+        assertEquals(Optional.of(user.userId()), service.resolveVerifiedIdentity(changedEmail));
+        assertEquals(Optional.of(user.userId()), service.resolveVerifiedIdentity(original));
+        assertEquals(user, store.findById(user.userId()).orElseThrow());
+        assertEquals(original.email(), store.findByKey(original.key()).orElseThrow().verifiedEmail());
+        assertEquals(1, generatedIds.get());
+    }
+
+    @Test
+    void unknownIdentityDoesNotProvisionOrFallBackToMatchingEmail() {
+        User internal = create();
+        User linked = service.registerVerifiedIdentity(google("known"), DETAILS, PHOTO);
+        var unknown = google("unknown");
+        assertTrue(service.resolveVerifiedIdentity(unknown).isEmpty());
+        assertTrue(store.findByKey(unknown.key()).isEmpty());
+        assertEquals(internal, store.findById(internal.userId()).orElseThrow());
+        assertEquals(linked, store.findById(linked.userId()).orElseThrow());
+        assertEquals(2, generatedIds.get());
+    }
+
+    @Test
+    void resolutionRequiresExactIssuerAndSubjectRatherThanAnInternalId() {
+        var identity = google("Subject");
+        User user = service.registerVerifiedIdentity(identity, DETAILS, PHOTO);
+        for (var key : List.of(
+                new ExternalIdentityKey("https://other.invalid", "Subject"),
+                new ExternalIdentityKey(identity.key().issuer(), "subject"),
+                new ExternalIdentityKey(identity.key().issuer(), user.userId().value()))) {
+            assertTrue(service.resolveVerifiedIdentity(
+                    new VerifiedExternalIdentity(identity.provider(), key, EMAIL)).isEmpty());
+        }
+        assertEquals(1, generatedIds.get());
+    }
+
+    @Test
+    void resolutionRejectsProviderSubstitutionWithoutChangingTheLink() {
+        var identity = google("linked");
+        User user = service.registerVerifiedIdentity(identity, DETAILS, PHOTO);
+        var substituted = new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL,
+                identity.key(), EMAIL);
+        fails(IDENTITY_CONFLICT, () -> service.resolveVerifiedIdentity(substituted));
+        assertEquals(Optional.of(user.userId()), service.resolveVerifiedIdentity(identity));
+        assertEquals(1, generatedIds.get());
+    }
+
+    @Test
+    void resolutionRejectsDeactivatedAccountAndKeepsItsIdentityReserved() {
+        var identity = google("linked");
+        User user = service.registerVerifiedIdentity(identity, DETAILS, PHOTO);
+        service.deactivateUser(principal(user), user.userId());
+        fails(USER_DEACTIVATED, () -> service.resolveVerifiedIdentity(identity));
+        assertEquals(user.userId(), store.findByKey(identity.key()).orElseThrow().userId());
+        assertEquals(1, generatedIds.get());
+    }
+
+    @Test
+    void resolutionRejectsMissingIdentityEvidence() {
+        assertThrows(NullPointerException.class, () -> service.resolveVerifiedIdentity(null));
+        assertEquals(0, generatedIds.get());
+    }
+
+    @Test
+    void missingPrincipalRejectsEveryOwnedWriteWithoutChangingData() {
+        User user = create();
+        var identity = google("linked");
+        grant(user, identity);
+        for (AuthenticatedPrincipal missing : Arrays.<AuthenticatedPrincipal>asList(null, () -> null)) {
+            fails(UNAUTHORIZED, () -> service.updateOwnProfile(missing, user.userId(), DETAILS));
+            fails(UNAUTHORIZED, () -> service.linkExternalIdentity(missing, user.userId(), identity));
+            fails(UNAUTHORIZED, () -> service.deactivateUser(missing, user.userId()));
+        }
+        assertEquals(user, store.findById(user.userId()).orElseThrow());
+        assertTrue(store.findByKey(identity.key()).isEmpty());
+    }
+
+    @Test
     void registrationRetryReturnsOriginalUserWithoutOverwritingProfileOrEvidence() {
         var identity = google("google-1");
         User first = service.registerVerifiedIdentity(identity, DETAILS, PHOTO);

@@ -170,8 +170,8 @@ Se conserva `.github/workflows/qa-mtec35-sql.yml` con nombre `ms-users CI`: PR h
 push a `main` y ejecución manual. Ubuntu 24.04 x86-64, Java 21, Maven Wrapper, tests normales,
 cuatro ArchUnit y 34 métodos SQL Server 2022 fijados por digest mediante Testcontainers.
 El preflight falla sin arquitectura/Docker/EULA adecuados; no omite SQL silenciosamente.
-El verificador exige 137 casos normales, los casos críticos por nombre, y los 34 SQL
-exactos sin errores, fallos, omisiones ni resultados flaky/rerun, aunque un reintento
+El verificador exige 144 casos normales tras integrar MTEC-36, los casos críticos por
+nombre, y los 34 SQL exactos sin errores, fallos, omisiones ni resultados flaky/rerun, aunque un reintento
 termine aprobado. Reconcilia también el resumen Failsafe; el entrypoint ejecuta
 las regresiones Python del verificador antes de Maven.
 Permisos `contents: read`; sin deploy, credenciales Azure ni `continue-on-error`.
