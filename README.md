@@ -638,7 +638,7 @@ El puerto de gestión es loopback 9091 (`MANAGEMENT_PORT`), sin detalles. Los pe
 añaden validación JDBC bajo demanda a readiness, con caché compartida de 30 s;
 `/health` continúa en el puerto principal. Revisar semántica de readiness en la guía.
 
-El CI existente ahora se activa en `main`, PR hacia `main` o manualmente. Exige 144
+El CI existente ahora se activa en `main`, PR hacia `main` o manualmente. Exige 157
 casos normales, incluidas cuatro reglas ArchUnit y regresiones por nombre, y 34 SQL
 reales sobre Linux x86-64 con Docker. Las 34 SQL del candidato aún están pendientes.
 El comando de desarrollo no ejecuta SQL:
