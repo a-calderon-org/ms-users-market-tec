@@ -32,6 +32,7 @@
     "retainsCommittedAccountAndIdentityAfterDatabaseEngineRestart",
     "rollsBackAllTablesAfterFailureFollowingAllWrites",
     "schemaValidationRejectsWrongDatabaseWithoutWriting",
+    "sessionCreationRenewalAndExpiryPersistOnRealSqlServer",
     "staleAggregateCannotOverwriteCommittedChanges",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",

@@ -526,6 +526,46 @@ class SqlUserStoreIT {
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='2' AND script='V2__sessions.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
+    }
+
+    @Test
+    void sessionCreationRenewalAndExpiryPersistOnRealSqlServer() {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        service().registerVerifiedIdentity(proof, details, photo);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        Instant start = Instant.parse("2026-11-03T12:00:00Z");
+        java.util.function.Function<Instant, SessionAuthority> authorityAt = instant -> new SessionAuthority(
+                new SqlSessionRepository(jdbc), store, store, store,
+                Clock.fixed(instant, ZoneOffset.UTC), new java.security.SecureRandom(), permit);
+
+        Session renewed = authorityAt.apply(start).create(proof);
+        assertEquals(0L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, renewed.sessionId()));
+        authorityAt.apply(start.plusSeconds(20 * 60)).recordAdmissibleActivity(renewed.sessionId());
+        Session afterRenewal = authorityAt.apply(start.plusSeconds(25 * 60)).renew(renewed.sessionId());
+        assertEquals(start.plusSeconds(85 * 60), afterRenewal.renewableUntil());
+        assertEquals(2L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, renewed.sessionId()));
+        assertTrue(authorityAt.apply(start.plusSeconds(50 * 60 - 1)).current(renewed.sessionId()).isPresent());
+        assertTrue(authorityAt.apply(start.plusSeconds(50 * 60)).current(renewed.sessionId()).isEmpty());
+        assertThrows(SessionRejectedException.class,
+                () -> authorityAt.apply(start.plusSeconds(50 * 60)).renew(renewed.sessionId()));
+
+        Session window = authorityAt.apply(start).create(proof);
+        authorityAt.apply(start.plusSeconds(20 * 60)).recordAdmissibleActivity(window.sessionId());
+        authorityAt.apply(start.plusSeconds(40 * 60)).recordAdmissibleActivity(window.sessionId());
+        assertTrue(authorityAt.apply(start.plusSeconds(60 * 60 - 1)).current(window.sessionId()).isPresent());
+        assertTrue(authorityAt.apply(start.plusSeconds(60 * 60)).current(window.sessionId()).isEmpty());
+        assertThrows(SessionRejectedException.class,
+                () -> authorityAt.apply(start.plusSeconds(60 * 60)).recordAdmissibleActivity(window.sessionId()));
     }
 
     @Test
