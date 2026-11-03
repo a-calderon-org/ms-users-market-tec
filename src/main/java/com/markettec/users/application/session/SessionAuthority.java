@@ -7,6 +7,7 @@ import com.markettec.users.application.ports.out.UserTransactions;
 import com.markettec.users.domain.model.User;
 import com.markettec.users.domain.model.ExternalIdentityKey;
 import com.markettec.users.domain.model.IdentityProvider;
+import com.markettec.users.domain.model.IdentityLinkStatus;
 import com.markettec.users.application.ports.out.VerifiedGoogleIdentity;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -45,7 +46,8 @@ public final class SessionAuthority {
         Objects.requireNonNull(evidence);
         return transactions.execute(() -> {
             var linked = identities.findByKey(evidence.key()).orElseThrow(SessionRejectedException::new);
-            if (linked.provider() != evidence.provider()) throw new SessionRejectedException();
+            if (linked.provider() != evidence.provider() || linked.status() != IdentityLinkStatus.ACTIVE)
+                throw new SessionRejectedException();
             User user = users.findById(linked.userId()).orElseThrow(SessionRejectedException::new);
             user.requireActive();
             byte[] bytes = new byte[16];
@@ -67,7 +69,8 @@ public final class SessionAuthority {
         return transactions.execute(() -> {
             var key = new ExternalIdentityKey(evidence.issuer(), evidence.subject());
             var linked = identities.findByKey(key).orElseThrow(SessionRejectedException::new);
-            if (linked.provider() != IdentityProvider.GOOGLE) throw new SessionRejectedException();
+            if (linked.provider() != IdentityProvider.GOOGLE || linked.status() != IdentityLinkStatus.ACTIVE)
+                throw new SessionRejectedException();
             User user = users.findById(linked.userId()).orElseThrow(SessionRejectedException::new);
             user.requireActive();
             byte[] bytes = new byte[16];
@@ -84,7 +87,8 @@ public final class SessionAuthority {
         if (sessionId == null || !sessionId.matches("[0-9a-f]{32}")) throw new SessionRejectedException();
         return transactions.execute(() -> {
             var linked = identities.findByKey(evidence.key()).orElseThrow(SessionRejectedException::new);
-            if (linked.provider() != evidence.provider()) throw new SessionRejectedException();
+            if (linked.provider() != evidence.provider() || linked.status() != IdentityLinkStatus.ACTIVE)
+                throw new SessionRejectedException();
             Session session = sessions.loadLocked(sessionId).orElseThrow(SessionRejectedException::new);
             if (!session.validAt(now()) || !session.userId().equals(linked.userId()))
                 throw new SessionRejectedException();

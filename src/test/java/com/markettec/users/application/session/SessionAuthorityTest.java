@@ -65,6 +65,11 @@ class SessionAuthorityTest {
                 () -> authority(allow).authenticate(stranger, s.sessionId()));
         assertThrows(SessionRejectedException.class,
                 () -> authority(allow).authenticate(evidence, "00000000000000000000000000000000"));
+        var link = users.findByKey(evidence.key()).orElseThrow();
+        users.replaceStatus(link, IdentityLinkStatus.DISABLED);
+        assertThrows(SessionRejectedException.class, () -> authority(allow).createAuthenticated(evidence));
+        assertThrows(SessionRejectedException.class, () -> authority(allow).authenticate(evidence, s.sessionId()));
+        users.replaceStatus(users.findByKey(evidence.key()).orElseThrow(), IdentityLinkStatus.ACTIVE);
         authority(allow).revoke(s.sessionId());
         assertThrows(SessionRejectedException.class,
                 () -> authority(allow).authenticate(evidence, s.sessionId()));

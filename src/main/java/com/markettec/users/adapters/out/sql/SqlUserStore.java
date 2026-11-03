@@ -212,16 +212,35 @@ public final class SqlUserStore implements UserRepository, ExternalIdentityRepos
         Objects.requireNonNull(key);
         return inUnit(() -> {
             var found = jdbc.query("""
-                    SELECT issuer, subject, user_id, provider, verified_email FROM dbo.external_identities
+                    SELECT issuer, subject, user_id, provider, verified_email, link_status FROM dbo.external_identities
                     WHERE issuer_hash = ? AND subject_hash = ?
                     """, (rs, row) -> new ExternalIdentity(IdentityProvider.valueOf(rs.getString("provider")),
                     new ExternalIdentityKey(rs.getString("issuer"), rs.getString("subject")),
-                    new UserId(rs.getString("user_id")), new Email(rs.getString("verified_email"))),
+                    new UserId(rs.getString("user_id")), new Email(rs.getString("verified_email")),
+                    IdentityLinkStatus.valueOf(rs.getString("link_status"))),
                     SqlIdentityKey.hash(key.issuer()), SqlIdentityKey.hash(key.subject())).stream().findFirst();
             if (found.isPresent() && !found.get().key().equals(key)) {
                 throw new UserPersistenceException("External identity digest collision");
             }
             return found;
+        });
+    }
+
+    @Override
+    public void replaceStatus(ExternalIdentity expected, IdentityLinkStatus status) {
+        Objects.requireNonNull(expected);
+        Objects.requireNonNull(status);
+        inUnit(() -> {
+            int changed = jdbc.update("""
+                    UPDATE dbo.external_identities SET link_status=?
+                    WHERE issuer_hash=? AND subject_hash=? AND issuer=? AND subject=?
+                      AND user_id=? AND provider=? AND link_status=?
+                    """, status.name(), SqlIdentityKey.hash(expected.key().issuer()),
+                    SqlIdentityKey.hash(expected.key().subject()), expected.key().issuer(),
+                    expected.key().subject(), expected.userId().value(), expected.provider().name(),
+                    expected.status().name());
+            if (changed != 1) throw new UserDomainException(CONCURRENT_MODIFICATION);
+            return null;
         });
     }
 
@@ -241,10 +260,10 @@ public final class SqlUserStore implements UserRepository, ExternalIdentityRepos
             }
             // Duplicate/range-lock/deadlock races escape to execute(), which rolls back and retries.
             jdbc.update("""
-                    INSERT INTO dbo.external_identities(issuer, subject, user_id, provider, verified_email)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO dbo.external_identities(issuer, subject, user_id, provider, verified_email, link_status)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """, identity.key().issuer(), identity.key().subject(), identity.userId().value(),
-                    identity.provider().name(), identity.verifiedEmail().address());
+                    identity.provider().name(), identity.verifiedEmail().address(), identity.status().name());
             return identity;
         });
     }

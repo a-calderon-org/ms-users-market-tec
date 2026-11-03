@@ -94,6 +94,41 @@ class GoogleLoginServiceTest {
                 () -> service().complete(challenge.attemptId(), challenge.browserSecret(), "valid"));
     }
 
+    @Test void blockedAccountCannotCreateSession() {
+        User user = link();
+        users.replace(user, user.deactivate());
+        var challenge = service().begin(); tokenNonce = challenge.nonce();
+        assertThrows(UserDomainException.class,
+                () -> service().complete(challenge.attemptId(), challenge.browserSecret(), "valid"));
+        assertTrue(sessions.isEmpty());
+    }
+
+    @Test void inactiveLinksCannotCreateSession() {
+        link();
+        for (IdentityLinkStatus status : List.of(IdentityLinkStatus.DISABLED, IdentityLinkStatus.REVOKED,
+                IdentityLinkStatus.PENDING, IdentityLinkStatus.CONFLICT)) {
+            users.replaceStatus(users.findByKey(key).orElseThrow(), status);
+            var challenge = service().begin(); tokenNonce = challenge.nonce();
+            assertThrows(SessionRejectedException.class,
+                    () -> service().complete(challenge.attemptId(), challenge.browserSecret(), "valid"));
+            assertTrue(sessions.isEmpty());
+            assertFalse(intents.get(challenge.attemptId()).consumed());
+            users.replaceStatus(users.findByKey(key).orElseThrow(), IdentityLinkStatus.ACTIVE);
+        }
+    }
+
+    @Test void providerConflictCannotCreateSession() {
+        var email = new Email("one@example.invalid");
+        User user = User.create(new UuidUserIdGenerator().nextId(), email,
+                new ProfileDetails("one", "One", "User"), URI.create("https://example.invalid/p"), start);
+        users.insert(user);
+        users.insertOrGet(new ExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, key, user.userId(), email));
+        var challenge = service().begin(); tokenNonce = challenge.nonce();
+        assertThrows(SessionRejectedException.class,
+                () -> service().complete(challenge.attemptId(), challenge.browserSecret(), "valid"));
+        assertTrue(sessions.isEmpty());
+    }
+
     @Test void wrongContextNonceExpiryAndInvalidTokenNeverCreateSession() {
         link();
         var first = service().begin(); tokenNonce = first.nonce();

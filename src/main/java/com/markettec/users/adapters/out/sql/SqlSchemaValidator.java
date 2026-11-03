@@ -60,7 +60,8 @@ public final class SqlSchemaValidator {
                         OBJECT_ID('dbo.recent_authentication_attempts'), OBJECT_ID('dbo.google_login_intents'))
                 """, String.class));
         if (!checks.containsAll(Set.of("ck_users_status", "ck_users_version", "ck_profiles_registered",
-                "ck_profiles_updated", "ck_external_identities_provider", "ck_sessions_version",
+                "ck_profiles_updated", "ck_external_identities_provider", "ck_external_identities_link_status",
+                "ck_sessions_version",
                 "ck_sessions_deadlines", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
                 "ck_recent_attempt_method", "ck_google_login_lifetime", "ck_google_login_version"))) {
             throw new UserPersistenceException("Missing SQL check constraints");
@@ -96,6 +97,7 @@ public final class SqlSchemaValidator {
         require(columns, "external_identities.user_id", "varchar:40:false");
         require(columns, "external_identities.provider", "varchar:24:false");
         require(columns, "external_identities.verified_email", "varchar:254:false");
+        require(columns, "external_identities.link_status", "varchar:16:false");
         require(columns, "sessions.session_id", "char:32:false");
         require(columns, "sessions.user_id", "varchar:40:false");
         for (String name : List.of("created_ms", "renewable_until_ms", "last_activity_ms",

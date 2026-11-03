@@ -61,7 +61,7 @@ class SqlUserStoreIT {
                     "SELECT CONVERT(varchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))", String.class));
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(4, flyway.migrate().migrationsExecuted);
+            assertEquals(5, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -518,10 +518,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("4", flyway.info().current().getVersion().getVersion());
-        assertEquals(4, flyway.info().applied().length);
+        assertEquals("5", flyway.info().current().getVersion().getVersion());
+        assertEquals(5, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(5, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -537,6 +537,10 @@ class SqlUserStoreIT {
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='4' AND script='V4__google_login_intents.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='5' AND script='V5__external_identity_authorization.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
     }
 
@@ -722,6 +726,42 @@ class SqlUserStoreIT {
                     Integer.class, owner.userId().value()));
             assertTrue(store.execute(() -> repo.loadLocked(challenge.attemptId()).orElseThrow().consumed()));
         } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void googleLoginRequiresActivePersistedLinkAndAccount() {
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        User owner = User.create(new UuidUserIdGenerator().nextId(), email,
+                details, photo, now);
+        var key = key();
+        store.execute(() -> {
+            store.insert(owner);
+            store.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, key, owner.userId(), email));
+            return null;
+        });
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), denySessionActions());
+        var proof = new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
+                key.issuer(), key.subject(), "sql-client", now, now.plusSeconds(3600));
+        assertNotNull(authority.createGoogle(proof));
+        var legacyKey = key();
+        jdbc.update("""
+                INSERT INTO dbo.external_identities(issuer, subject, user_id, provider, verified_email)
+                VALUES (?, ?, ?, 'GOOGLE', ?)
+                """, legacyKey.issuer(), legacyKey.subject(), owner.userId().value(), email.address());
+        assertEquals(IdentityLinkStatus.PENDING, store.findByKey(legacyKey).orElseThrow().status());
+        var legacyProof = new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
+                legacyKey.issuer(), legacyKey.subject(), "sql-client", now, now.plusSeconds(3600));
+        assertThrows(SessionRejectedException.class, () -> authority.createGoogle(legacyProof));
+        for (IdentityLinkStatus status : List.of(IdentityLinkStatus.DISABLED, IdentityLinkStatus.REVOKED,
+                IdentityLinkStatus.PENDING, IdentityLinkStatus.CONFLICT)) {
+            store.replaceStatus(store.findByKey(key).orElseThrow(), status);
+            assertEquals(status, newStore().findByKey(key).orElseThrow().status());
+            assertThrows(SessionRejectedException.class, () -> authority.createGoogle(proof));
+            store.replaceStatus(store.findByKey(key).orElseThrow(), IdentityLinkStatus.ACTIVE);
+        }
+        store.replace(owner, owner.deactivate());
+        assertThrows(UserDomainException.class, () -> authority.createGoogle(proof));
     }
 
     private record RecentFixture(User user, Session session, RecentAttempt attempt,

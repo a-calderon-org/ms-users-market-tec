@@ -367,6 +367,9 @@ class UserServiceTest {
     private ExternalIdentityRepository failingAfterIdentityInsert() {
         return new ExternalIdentityRepository() {
             public Optional<ExternalIdentity> findByKey(ExternalIdentityKey key) { return store.findByKey(key); }
+            public void replaceStatus(ExternalIdentity expected, IdentityLinkStatus status) {
+                store.replaceStatus(expected, status);
+            }
             public ExternalIdentity insertOrGet(ExternalIdentity identity) {
                 store.insertOrGet(identity);
                 throw new IllegalStateException("Simulated adapter failure");

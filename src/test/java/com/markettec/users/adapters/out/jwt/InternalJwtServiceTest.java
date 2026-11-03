@@ -99,6 +99,8 @@ class InternalJwtServiceTest {
         assertEquals(List.of("markettec-api"), claims.getAudience());
         assertEquals(NOW, claims.getIssueTime().toInstant());
         assertEquals(NOW.plusSeconds(240), claims.getExpirationTime().toInstant());
+        assertEquals(java.util.Set.of("sub", "sid", "iss", "aud", "iat", "exp", "jti"),
+                claims.getClaims().keySet());
         assertEquals(USER, service.verify(compact).userId());
         assertNotEquals(claims.getJWTID(), SignedJWT.parse(service.issue(authenticated(SID))).getJWTClaimsSet().getJWTID());
         verify(authority, times(2)).current(SID);

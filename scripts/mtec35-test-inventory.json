@@ -1,5 +1,5 @@
 {
-  "normal_count": 209,
+  "normal_count": 212,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -20,6 +20,8 @@
     "failedAggregateUpdateRestoresProfileStatusAndVersion",
     "failedRecentPersistenceRollsBackSensitiveUnit",
     "flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum",
+    "googleLoginIntentIsAtomicAcrossConcurrentSqlExchangesAndRollback",
+    "googleLoginRequiresActivePersistedLinkAndAccount",
     "identityKeysAreExactCaseSensitiveAndHaveNoLengthTruncation",
     "linkingAndDeactivationSerializeAcrossConnections",
     "missingIdsAndIdentitiesReturnEmpty",
@@ -43,8 +45,7 @@
     "staleAggregateCannotOverwriteCommittedChanges",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",
-    "updatesOnlyTheProfileDetailsAndIncrementsVersion",
-    "googleLoginIntentIsAtomicAcrossConcurrentSqlExchangesAndRollback"
+    "updatesOnlyTheProfileDetailsAndIncrementsVersion"
   ],
   "required_normal_methods": {
     "com.markettec.users.application.session.InstitutionalEmailProofTest": [
@@ -175,11 +176,14 @@
       "sessionRejectionAndMissingVerifierFailClosed"
     ],
     "com.markettec.users.application.session.GoogleLoginServiceTest": [
+      "blockedAccountCannotCreateSession",
+      "concurrentExchangeHasOneWinner",
+      "inactiveLinksCannotCreateSession",
       "linkedGoogleIdentityCreatesOneSessionAndInternalIdentity",
-      "wrongContextNonceExpiryAndInvalidTokenNeverCreateSession",
-      "unlinkedIdentityAndSameEmailAccountCannotLoginOrMerge",
       "persistenceFailureRollsBackConsumptionAndSession",
-      "concurrentExchangeHasOneWinner"
+      "providerConflictCannotCreateSession",
+      "unlinkedIdentityAndSameEmailAccountCannotLoginOrMerge",
+      "wrongContextNonceExpiryAndInvalidTokenNeverCreateSession"
     ]
   }
 }
