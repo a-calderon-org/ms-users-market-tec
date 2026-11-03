@@ -1,5 +1,5 @@
 {
-  "normal_count": 239,
+  "normal_count": 241,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -142,7 +142,8 @@
       "concurrentRevocationWinsOverSubsequentRenewalAndActivity",
       "simultaneousRevocationsAreIdempotent",
       "authenticatedIssuanceContextRequiresVerifiedLinkedIdentity",
-      "verifiedLoginCanMintIssuanceContextWithoutHttpIds"
+      "verifiedLoginCanMintIssuanceContextWithoutHttpIds",
+      "technicalRefreshRotatesCredentialsWithoutRenewalOrActivity"
     ],
     "com.markettec.users.adapters.out.jwt.InternalJwtServiceTest": [
       "issuesValidRs256TokenFromTrustedActiveSession",
@@ -212,7 +213,8 @@
       "enabledConstructorRequiresExplicitVerifiedHttpsTopology"
     ],
     "com.markettec.users.adapters.in.web.GoogleHttpDisabledTest": [
-      "defaultApplicationDoesNotExposeGoogleAuthRoutes"
+      "defaultApplicationDoesNotExposeGoogleAuthRoutes",
+      "defaultApplicationDoesNotExposeB3AuthRoutes"
     ]
   }
 }

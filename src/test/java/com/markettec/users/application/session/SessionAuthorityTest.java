@@ -220,6 +220,26 @@ class SessionAuthorityTest {
         assertFalse(sessions.loadLocked(first.sessionId()).orElseThrow().revoked());
     }
 
+    @Test void technicalRefreshRotatesCredentialsWithoutRenewalOrActivity() {
+        create();
+        SessionActionAuthorization deny = new SessionActionAuthorization() {
+            public void requireRenewal(Session s) { throw new SessionRejectedException(); }
+            public void requireAdmissibleActivity(Session s) { throw new SessionRejectedException(); }
+        };
+        var first = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        var before = sessions.loadLocked(first.sessionId()).orElseThrow();
+        clock.set(start.plus(Duration.ofMinutes(29)));
+        var rotated = authority(deny).refresh(first.refreshToken(), first.csrfToken(), a -> "rotated-jwt");
+        assertEquals("rotated-jwt", rotated.jwt());
+        assertNotEquals(first.refreshToken(), rotated.refreshToken());
+        assertNotEquals(first.csrfToken(), rotated.csrfToken());
+        assertEquals(before, sessions.loadLocked(first.sessionId()).orElseThrow());
+        assertEquals(before.deadline(), rotated.sessionDeadline());
+        clock.set(start.plus(Duration.ofMinutes(30)));
+        assertThrows(SessionRejectedException.class,
+                () -> authority(deny).refresh(rotated.refreshToken(), rotated.csrfToken(), a -> "jwt"));
+    }
+
     @Test void concurrentRefreshAllowsExactlyOneWinner() throws Exception {
         create();
         var first = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
@@ -282,6 +302,7 @@ class SessionAuthorityTest {
         for (int minute = 29; minute < 480; minute += 29) {
             clock.set(start.plusSeconds(minute * 60L));
             authority(allow).recordAdmissibleActivity(active.sessionId());
+            authority(allow).renew(active.sessionId());
             active = authority(allow).refresh(active.refreshToken(), active.csrfToken(), a -> "jwt");
             assertFalse(active.sessionDeadline().isAfter(start.plusSeconds(8 * 3600)));
         }

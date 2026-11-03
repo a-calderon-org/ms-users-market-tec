@@ -143,10 +143,10 @@ public final class SessionAuthority {
     }
 
     /**
-     * The approved browser adapter must prove an explicit user renewal before this is enabled.
+     * Technical credential rotation does not authorize a user renewal or activity.
      * A consumed credential is rejected without grace. It does not revoke an otherwise live
      * session: replay-triggered revocation is a separate policy decision not approved here.
-     * Refresh and CSRF proofs both rotate on success; neither extends idle or absolute time.
+     * Refresh and CSRF proofs both rotate on success; no session deadline changes.
      */
     public SessionTokens refresh(String refresh, String csrf, InternalTokenIssuer jwt) {
         Objects.requireNonNull(jwt);
@@ -156,13 +156,10 @@ public final class SessionAuthority {
             String id = before.sessionId();
             if (!before.validAt(now())) throw new SessionRejectedException();
             SessionVerifiers old = requireCredentials(id, refresh, csrf);
-            authorization.requireRenewal(before);
-            Session after = before.renewAt(now());
             String nextRefresh = randomHex(32);
             String nextCsrf = randomHex(32);
             sessions.rotateVerifiers(id, old, new SessionVerifiers(hash(nextRefresh), hash(nextCsrf)));
-            sessions.replace(before, after);
-            return tokens(after, jwt.issue(new AuthenticatedSession(id)), nextRefresh, nextCsrf);
+            return tokens(before, jwt.issue(new AuthenticatedSession(id)), nextRefresh, nextCsrf);
         });
     }
 
