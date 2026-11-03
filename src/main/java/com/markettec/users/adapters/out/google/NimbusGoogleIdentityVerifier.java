@@ -59,6 +59,7 @@ public final class NimbusGoogleIdentityVerifier implements GoogleIdentityVerifie
             String authorizedParty = claims.getStringClaim("azp");
             Date expiration = claims.getExpirationTime();
             Date issuedAt = claims.getIssueTime();
+            Date notBefore = claims.getNotBeforeTime();
             Instant now = clock.instant();
             if (!policy.issuers().contains(issuer) || subject == null || subject.isBlank() ||
                     subject.length() > 255 || subject.chars().anyMatch(Character::isWhitespace) ||
@@ -69,6 +70,7 @@ public final class NimbusGoogleIdentityVerifier implements GoogleIdentityVerifie
                     expiration == null || issuedAt == null ||
                     !expiration.toInstant().plus(policy.clockSkew()).isAfter(now) ||
                     issuedAt.toInstant().isAfter(now.plus(policy.clockSkew())) ||
+                    (notBefore != null && notBefore.toInstant().isAfter(now.plus(policy.clockSkew()))) ||
                     issuedAt.after(expiration))
                 throw new InvalidGoogleTokenException();
             if (context.expectedNonce() != null && !context.expectedNonce().equals(claims.getStringClaim("nonce")))

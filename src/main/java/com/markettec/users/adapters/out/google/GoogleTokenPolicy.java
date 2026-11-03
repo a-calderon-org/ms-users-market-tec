@@ -10,7 +10,8 @@ public record GoogleTokenPolicy(Set<String> audiences, Set<String> issuers, Dura
     public GoogleTokenPolicy {
         audiences = Set.copyOf(audiences);
         issuers = Set.copyOf(issuers);
-        if (audiences.isEmpty() || audiences.stream().anyMatch(String::isBlank))
+        if (audiences.isEmpty() || audiences.stream().anyMatch(a -> a.isBlank() ||
+                a.indexOf('*') >= 0 || a.chars().anyMatch(Character::isWhitespace)))
             throw new IllegalArgumentException("Google audiences must be configured");
         if (issuers.isEmpty() || !GOOGLE_ISSUERS.containsAll(issuers))
             throw new IllegalArgumentException("Only Google issuers are allowed");

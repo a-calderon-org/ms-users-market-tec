@@ -6,11 +6,16 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Flow;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -54,12 +59,9 @@ public final class CachedGooglePublicKeys implements GooglePublicKeys {
         try {
             HttpRequest request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(3))
                     .header("Accept", "application/json").GET().build();
-            HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            HttpResponse<byte[]> response = http.send(request, ignored -> new BoundedBodySubscriber());
             lastFetch = now;
-            byte[] body;
-            try (InputStream input = response.body()) {
-                body = input.readNBytes(MAX_JWKS_BYTES + 1);
-            }
+            byte[] body = response.body();
             if (response.statusCode() != 200 || body.length > MAX_JWKS_BYTES || body.length == 0)
                 throw new IllegalStateException("Google JWKS unavailable");
             JWKSet parsed = JWKSet.parse(new String(body, java.nio.charset.StandardCharsets.UTF_8));
@@ -78,5 +80,38 @@ public final class CachedGooglePublicKeys implements GooglePublicKeys {
             if (!now.isBefore(expiresAt)) cached = null;
             throw new IllegalStateException("Google JWKS unavailable");
         }
+    }
+
+    /** Completes only after the whole response body is read, so request timeout covers the body. */
+    static final class BoundedBodySubscriber implements HttpResponse.BodySubscriber<byte[]> {
+        private final CompletableFuture<byte[]> body = new CompletableFuture<>();
+        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        private Flow.Subscription subscription;
+
+        @Override public CompletionStage<byte[]> getBody() { return body; }
+
+        @Override public void onSubscribe(Flow.Subscription subscription) {
+            this.subscription = subscription;
+            subscription.request(1);
+        }
+
+        @Override public void onNext(List<ByteBuffer> buffers) {
+            for (ByteBuffer buffer : buffers) {
+                int remaining = buffer.remaining();
+                if (remaining > MAX_JWKS_BYTES - bytes.size()) {
+                    subscription.cancel();
+                    body.completeExceptionally(new IllegalStateException("Google JWKS too large"));
+                    return;
+                }
+                byte[] chunk = new byte[remaining];
+                buffer.get(chunk);
+                bytes.writeBytes(chunk);
+            }
+            subscription.request(1);
+        }
+
+        @Override public void onError(Throwable error) { body.completeExceptionally(error); }
+
+        @Override public void onComplete() { body.complete(bytes.toByteArray()); }
     }
 }

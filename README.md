@@ -546,7 +546,7 @@ El resultado remoto y los enlaces de evidencia constan en `docs/MTEC35_QA_REVIEW
 `GoogleIdentityVerifier.verify(idToken, GoogleVerificationContext)` devuelve solo
 `issuer`, `subject`, `audience`, `issuedAt` y `expiresAt` después de verificar firma
 RS256 con una clave RSA pública de Google, `kid`, emisor, audiencia, `azp` cuando
-corresponde, tiempos y nonce esperado cuando un componente confiable lo provee.
+corresponde, `iat`, `exp`, `nbf` si aparece y nonce esperado cuando un componente confiable lo provee.
 No usa correo, `email_verified`, `hd`, nombre ni foto para decidir privilegios.
 Tampoco resuelve `userId`, crea cuentas, emite JWT ni abre sesiones. El contexto
 esperado no debe construirse desde parámetros controlados por el cliente.
@@ -638,7 +638,7 @@ El puerto de gestión es loopback 9091 (`MANAGEMENT_PORT`), sin detalles. Los pe
 añaden validación JDBC bajo demanda a readiness, con caché compartida de 30 s;
 `/health` continúa en el puerto principal. Revisar semántica de readiness en la guía.
 
-El CI existente ahora se activa en `main`, PR hacia `main` o manualmente. Exige 157
+El CI existente ahora se activa en `main`, PR hacia `main` o manualmente. Exige 160
 casos normales, incluidas cuatro reglas ArchUnit y regresiones por nombre, y 34 SQL
 reales sobre Linux x86-64 con Docker. Las 34 SQL del candidato aún están pendientes.
 El comando de desarrollo no ejecuta SQL:

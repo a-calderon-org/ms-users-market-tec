@@ -1,5 +1,5 @@
 {
-  "normal_count": 157,
+  "normal_count": 160,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -49,11 +49,14 @@
       "keyRotationAndUnavailableKeysFailClosed",
       "malformedOversizedAndJoseKeyReferencesAreRejected",
       "errorsNeverEchoCredential(CapturedOutput)",
-      "policyRejectsUntrustedSourceAndMissingAudience"
+      "policyRejectsUntrustedSourceAndMissingAudience",
+      "configurationFailsClosedWhenDisabledOrIncomplete"
     ],
     "com.markettec.users.adapters.out.google.CachedGooglePublicKeysTest": [
       "cacheHonorsMetadataBoundsAndRefreshesRotatedKeys",
-      "emptyOrUnavailableJwksNeverBecomesTrusted"
+      "emptyOrUnavailableJwksNeverBecomesTrusted",
+      "boundedSubscriberCancelsOversizedJwksBeforeBufferingIt",
+      "expiredCacheIsDiscardedWhenGoogleStopsResponding"
     ],
     "com.markettec.users.application.usecases.UserServiceTest": [
       "resolvesLinkedIdentityWithoutChangingAccountOrOriginalEvidence",

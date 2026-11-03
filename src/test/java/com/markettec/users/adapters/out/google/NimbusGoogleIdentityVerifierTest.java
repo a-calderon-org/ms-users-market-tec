@@ -1,6 +1,8 @@
 package com.markettec.users.adapters.out.google;
 
 import com.markettec.users.application.ports.out.GoogleVerificationContext;
+import com.markettec.users.application.ports.out.GoogleIdentityVerifier;
+import com.markettec.users.config.GoogleVerifierConfig;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.JWSSigner;
@@ -16,6 +18,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.convert.ApplicationConversionService;
 
 import java.net.URI;
 import java.security.KeyPair;
@@ -112,6 +116,7 @@ class NimbusGoogleIdentityVerifierTest {
     void expirationAndIssuedAtAreStrict() throws Exception {
         rejects(token(b -> b.expirationTime(Date.from(NOW.minusSeconds(31)))));
         rejects(token(b -> b.issueTime(Date.from(NOW.plusSeconds(31)))));
+        rejects(token(b -> b.notBeforeTime(Date.from(NOW.plusSeconds(31)))));
         rejects(token(b -> b.claim("exp", null)));
         rejects(token(b -> b.claim("iat", null)));
         rejects(token(b -> b.issueTime(Date.from(NOW.plusSeconds(20)))
@@ -171,9 +176,29 @@ class NimbusGoogleIdentityVerifierTest {
                 Set.of("https://accounts.google.com"), Duration.ZERO));
         assertThrows(IllegalArgumentException.class, () -> new GoogleTokenPolicy(Set.of(AUD),
                 Set.of("https://other.example"), Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> new GoogleTokenPolicy(Set.of("*"),
+                Set.of("https://accounts.google.com"), Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> new GoogleTokenPolicy(Set.of("client *"),
+                Set.of("https://accounts.google.com"), Duration.ZERO));
         assertThrows(IllegalArgumentException.class, () -> new CachedGooglePublicKeys(
                 URI.create("https://attacker.example/jwks"), null, Clock.systemUTC(),
                 Duration.ofMinutes(10), Duration.ofSeconds(10)));
+    }
+
+    @Test
+    void configurationFailsClosedWhenDisabledOrIncomplete() {
+        var runner = new ApplicationContextRunner()
+                .withInitializer(context -> context.getBeanFactory()
+                        .setConversionService(ApplicationConversionService.getSharedInstance()))
+                .withUserConfiguration(GoogleVerifierConfig.class)
+                .withBean(Clock.class, Clock::systemUTC);
+        runner.run(context -> assertFalse(context.containsBean("googleIdentityVerifier")));
+        runner.withPropertyValues("users.google.enabled=true")
+                .run(context -> assertNotNull(context.getStartupFailure()));
+        runner.withPropertyValues("users.google.enabled=true", "users.google.audiences=*")
+                .run(context -> assertNotNull(context.getStartupFailure()));
+        runner.withPropertyValues("users.google.enabled=true", "users.google.audiences=" + AUD)
+                .run(context -> assertNotNull(context.getBean(GoogleIdentityVerifier.class)));
     }
 
     private String token(Consumer<JWTClaimsSet.Builder> change) throws Exception {
