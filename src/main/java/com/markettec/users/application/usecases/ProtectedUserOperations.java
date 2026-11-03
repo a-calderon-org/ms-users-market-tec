@@ -6,6 +6,8 @@ import com.markettec.users.application.ports.in.VerifiedInternalToken;
 import com.markettec.users.application.ports.out.InternalTokenVerifier;
 import com.markettec.users.application.session.SessionAuthority;
 import com.markettec.users.application.session.SessionRejectedException;
+import com.markettec.users.application.session.RecentAuthenticationAuthority;
+import com.markettec.users.application.session.RecentAttempt;
 import com.markettec.users.domain.model.*;
 import java.time.Clock;
 import java.util.Objects;
@@ -16,13 +18,20 @@ public final class ProtectedUserOperations {
     private final SessionAuthority sessions;
     private final UserUseCases users;
     private final Clock clock;
+    private final RecentAuthenticationAuthority recent;
 
     public ProtectedUserOperations(InternalTokenVerifier jwt, SessionAuthority sessions,
                                    UserUseCases users, Clock clock) {
+        this(jwt, sessions, users, clock, null);
+    }
+
+    public ProtectedUserOperations(InternalTokenVerifier jwt, SessionAuthority sessions,
+                                   UserUseCases users, Clock clock, RecentAuthenticationAuthority recent) {
         this.jwt = Objects.requireNonNull(jwt);
         this.sessions = Objects.requireNonNull(sessions);
         this.users = Objects.requireNonNull(users);
         this.clock = Objects.requireNonNull(clock);
+        this.recent = recent;
     }
 
     /** A local JWT is sufficient for this immediate, non-streaming read. */
@@ -39,14 +48,25 @@ public final class ProtectedUserOperations {
     }
 
     public User deactivateUser(String bearer, UserId target) {
-        return sensitive(bearer, target, Permission.DEACTIVATE_USER,
-                token -> users.deactivateUser(token::userId, target));
+        throw new SessionRejectedException();
+    }
+
+    /** Deactivation requires a verified, single-use proof for this exact account. */
+    public User deactivateUser(String bearer, UserId target, String attemptId) {
+        var token = authorize(bearer, target, Permission.DEACTIVATE_USER);
+        if (recent == null) throw new SessionRejectedException();
+        return recent.consume(token.sessionId(), token.userId(), attemptId,
+                RecentAttempt.Method.INSTITUTIONAL_EMAIL, "DEACTIVATE_USER", target.value(), () -> {
+                    requireUnexpired(token);
+                    User result = users.deactivateUser(token::userId, target);
+                    requireUnexpired(token);
+                    return result;
+                });
     }
 
     public ExternalIdentity linkExternalIdentity(String bearer, UserId target,
                                                  VerifiedExternalIdentity identity) {
-        return sensitive(bearer, target, Permission.LINK_IDENTITY,
-                token -> users.linkExternalIdentity(token::userId, target, identity));
+        throw new SessionRejectedException();
     }
 
     private <T> T sensitive(String bearer, UserId target, Permission permission,

@@ -61,7 +61,7 @@ class SqlUserStoreIT {
                     "SELECT CONVERT(varchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))", String.class));
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(2, flyway.migrate().migrationsExecuted);
+            assertEquals(3, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -518,10 +518,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("2", flyway.info().current().getVersion().getVersion());
-        assertEquals(2, flyway.info().applied().length);
+        assertEquals("3", flyway.info().current().getVersion().getVersion());
+        assertEquals(3, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(3, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -529,6 +529,10 @@ class SqlUserStoreIT {
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='2' AND script='V2__sessions.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='3' AND script='V3__recent_authentication_attempts.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
     }
 
@@ -661,6 +665,121 @@ class SqlUserStoreIT {
             public void requireRenewal(Session session) { throw new SessionRejectedException(); }
             public void requireAdmissibleActivity(Session session) { throw new SessionRejectedException(); }
         };
+    }
+
+    private record RecentFixture(User user, Session session, RecentAttempt attempt,
+                                 SessionAuthority sessions, RecentAuthenticationAuthority recent) { }
+
+    private RecentFixture recentFixture() {
+        User owner = user();
+        store.insert(owner);
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        Clock fixed = Clock.fixed(now, ZoneOffset.UTC);
+        var sessionRepo = new SqlSessionRepository(jdbc);
+        var attemptRepo = new SqlRecentAttemptRepository(jdbc);
+        Session session = Session.start(UUID.randomUUID().toString().replace("-", ""), owner.userId(), now);
+        RecentAttempt attempt = new RecentAttempt(UUID.randomUUID().toString().replace("-", ""), owner.userId(),
+                session.sessionId(), RecentAttempt.Method.INSTITUTIONAL_EMAIL, "DEACTIVATE_USER",
+                owner.userId().value(), "a".repeat(64), now, now.plusSeconds(300), null, false, 0);
+        store.execute(() -> {
+            sessionRepo.insert(session);
+            attemptRepo.insert(attempt);
+            attemptRepo.replace(attempt, attempt.verifiedAt(now));
+            return null;
+        });
+        var authority = new SessionAuthority(sessionRepo, store, store, store, fixed,
+                new java.security.SecureRandom(), denySessionActions());
+        return new RecentFixture(owner, session, attempt, authority,
+                new RecentAuthenticationAuthority(authority, attemptRepo, fixed, new java.security.SecureRandom()));
+    }
+
+    private int consumeRecent(RecentFixture f) {
+        return f.recent().consume(f.session().sessionId(), f.user().userId(), f.attempt().attemptId(),
+                f.attempt().method(), f.attempt().operation(), f.attempt().target(), () ->
+                        jdbc.update("UPDATE dbo.users SET version=version+1 WHERE user_id=?", f.user().userId().value()));
+    }
+
+    @Test void recentProofCommitsOnceWithSensitiveMutation() {
+        RecentFixture f = recentFixture();
+        assertEquals(1, consumeRecent(f));
+        assertThrows(SessionRejectedException.class, () -> consumeRecent(f));
+        assertEquals(1L, jdbc.queryForObject("SELECT version FROM dbo.users WHERE user_id=?",
+                Long.class, f.user().userId().value()));
+        assertTrue(jdbc.queryForObject("SELECT consumed FROM dbo.recent_authentication_attempts WHERE attempt_id=?",
+                Boolean.class, f.attempt().attemptId()));
+    }
+
+    @Test void concurrentRecentProofConsumersHaveOneCommit() throws Exception {
+        RecentFixture f = recentFixture();
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            Callable<Boolean> task = () -> {
+                gate.await();
+                try { return consumeRecent(f) == 1; }
+                catch (SessionRejectedException rejected) { return false; }
+            };
+            var first = pool.submit(task);
+            var second = pool.submit(task);
+            gate.countDown();
+            assertEquals(1, (first.get(30, TimeUnit.SECONDS) ? 1 : 0)
+                    + (second.get(30, TimeUnit.SECONDS) ? 1 : 0));
+            assertEquals(1L, jdbc.queryForObject("SELECT version FROM dbo.users WHERE user_id=?",
+                    Long.class, f.user().userId().value()));
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test void recentProofAndMutationRollbackTogether() {
+        RecentFixture f = recentFixture();
+        assertThrows(IllegalStateException.class, () -> f.recent().consume(f.session().sessionId(),
+                f.user().userId(), f.attempt().attemptId(), f.attempt().method(), f.attempt().operation(),
+                f.attempt().target(), () -> {
+                    jdbc.update("UPDATE dbo.users SET version=version+1 WHERE user_id=?", f.user().userId().value());
+                    throw new IllegalStateException("fail operation");
+                }));
+        assertFalse(jdbc.queryForObject("SELECT consumed FROM dbo.recent_authentication_attempts WHERE attempt_id=?",
+                Boolean.class, f.attempt().attemptId()));
+        assertEquals(0L, jdbc.queryForObject("SELECT version FROM dbo.users WHERE user_id=?",
+                Long.class, f.user().userId().value()));
+        assertEquals(1, consumeRecent(f));
+    }
+
+    @Test void recentProofSerializesWithRevocation() throws Exception {
+        RecentFixture f = recentFixture();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var operation = pool.submit(() -> f.recent().consume(f.session().sessionId(), f.user().userId(),
+                    f.attempt().attemptId(), f.attempt().method(), f.attempt().operation(), f.attempt().target(), () -> {
+                        entered.countDown();
+                        try { if (!release.await(15, TimeUnit.SECONDS)) throw new AssertionError("timeout"); }
+                        catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+                        return jdbc.update("UPDATE dbo.users SET version=version+1 WHERE user_id=?", f.user().userId().value());
+                    }));
+            assertTrue(entered.await(15, TimeUnit.SECONDS));
+            var revoke = pool.submit(() -> { f.sessions().revoke(f.session().sessionId()); return null; });
+            assertThrows(TimeoutException.class, () -> revoke.get(200, TimeUnit.MILLISECONDS));
+            release.countDown();
+            assertEquals(1, operation.get(30, TimeUnit.SECONDS));
+            revoke.get(30, TimeUnit.SECONDS);
+            assertThrows(SessionRejectedException.class, () -> consumeRecent(f));
+        } finally { release.countDown(); pool.shutdownNow(); }
+    }
+
+    @Test void failedRecentPersistenceRollsBackSensitiveUnit() {
+        RecentFixture f = recentFixture();
+        assertThrows(UserPersistenceException.class, () -> f.recent().consume(f.session().sessionId(),
+                f.user().userId(), f.attempt().attemptId(), f.attempt().method(), f.attempt().operation(),
+                f.attempt().target(), () -> {
+                    jdbc.update("UPDATE dbo.users SET version=version+1 WHERE user_id=?", f.user().userId().value());
+                    jdbc.update("INSERT INTO dbo.missing_recent_table (x) VALUES (1)");
+                    return null;
+                }));
+        assertFalse(jdbc.queryForObject("SELECT consumed FROM dbo.recent_authentication_attempts WHERE attempt_id=?",
+                Boolean.class, f.attempt().attemptId()));
+        assertEquals(0L, jdbc.queryForObject("SELECT version FROM dbo.users WHERE user_id=?",
+                Long.class, f.user().userId().value()));
     }
 
     @Test

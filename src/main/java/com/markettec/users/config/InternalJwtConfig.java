@@ -4,6 +4,7 @@ import com.markettec.users.adapters.out.jwt.InternalJwtKeyRing;
 import com.markettec.users.adapters.out.jwt.InternalJwtService;
 import com.markettec.users.application.usecases.ProtectedUserOperations;
 import com.markettec.users.application.session.SessionAuthority;
+import com.markettec.users.application.session.RecentAuthenticationAuthority;
 import com.markettec.users.application.ports.in.UserUseCases;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -33,7 +34,8 @@ public class InternalJwtConfig {
 
     @Bean
     ProtectedUserOperations protectedUserOperations(InternalJwtService jwt, SessionAuthority authority,
-                                                     UserUseCases users, Clock clock) {
-        return new ProtectedUserOperations(jwt, authority, users, clock);
+                                                     UserUseCases users, Clock clock,
+                                                     RecentAuthenticationAuthority recent) {
+        return new ProtectedUserOperations(jwt, authority, users, clock, recent);
     }
 }

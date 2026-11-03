@@ -5,6 +5,7 @@ import com.markettec.users.adapters.out.sql.AzureSqlConnection;
 import com.markettec.users.adapters.out.sql.SqlSchemaValidator;
 import com.markettec.users.adapters.out.sql.SqlUserStore;
 import com.markettec.users.adapters.out.sql.SqlSessionRepository;
+import com.markettec.users.adapters.out.sql.SqlRecentAttemptRepository;
 import com.markettec.users.application.session.*;
 import com.markettec.users.application.ports.in.UserUseCases;
 import com.markettec.users.application.ports.out.IdentityLinkAuthorization;
@@ -82,6 +83,17 @@ public class SqlUserConfig {
     @Bean
     SqlSessionRepository sqlSessionRepository(DataSource source) {
         return new SqlSessionRepository(new JdbcTemplate(source));
+    }
+
+    @Bean
+    SqlRecentAttemptRepository sqlRecentAttemptRepository(DataSource source) {
+        return new SqlRecentAttemptRepository(new JdbcTemplate(source));
+    }
+
+    @Bean
+    RecentAuthenticationAuthority recentAuthenticationAuthority(SessionAuthority sessions,
+            SqlRecentAttemptRepository attempts, Clock clock) {
+        return new RecentAuthenticationAuthority(sessions, attempts, clock, new SecureRandom());
     }
 
     @Bean
