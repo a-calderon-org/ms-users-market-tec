@@ -1,9 +1,15 @@
-name: MTEC-35 isolated SQL QA
+name: ms-users CI
 
 on:
   push:
-    branches: [feat/mtec35-azure-sql-persistence]
-    paths-ignore: ['docs/**']
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ms-users-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

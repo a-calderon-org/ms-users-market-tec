@@ -534,7 +534,7 @@ fijado, Testcontainers 1.21.4 usa su módulo Microsoft y no se necesitan secrets
 Los cinco casos añadidos verifican historial Flyway, aislamiento real, deadlock y
 reintento completo, ausencia de replay después de commit real y permisos de un
 runtime SQL restringido exclusivamente local. No certifican una identidad Entra remota.
-El verificador `scripts/verify-mtec35-reports.py` exige 118 casos normales y los 34
+El verificador `scripts/verify-mtec35-reports.py` exige 144 casos normales y los 34
 métodos SQL del inventario, todos ejecutados y aprobados sin omisiones. El comando
 normal de Maven continúa siendo válido para desarrollo Mac y no acredita QA SQL.
 El resultado remoto y los enlaces de evidencia constan en `docs/MTEC35_QA_REVIEW.md`.
@@ -563,8 +563,9 @@ pruebas; la composición local y SQL sigue rechazando vínculos por defecto.
 Las pruebas nuevas cubren resolución estable sin escrituras, identidad desconocida
 con correo coincidente, issuer/subject exactos, sustitución de proveedor, cuenta
 desactivada, evidencia ausente y rechazo de escrituras sin principal. Complementan
-las 111 pruebas previas; el inventario normal pasa a 118. La suite normal no certifica
-SQL Server real ni APIM, Google o Azure. No se modifican persistencia ni migraciones.
+las 111 pruebas previas; junto con las 26 de MTEC-37, el inventario normal pasa a 144.
+La suite normal no certifica SQL Server real ni APIM, Google o Azure.
+No se modifican persistencia ni migraciones.
 
 ### Fases posteriores — Proposed, no iniciadas
 
@@ -585,3 +586,39 @@ de integración. **No determinado:** conformidad efectiva de Azure/APIM.
 el protocolo de intento/evidencia y parámetros mínimos con B07. La primera versión
 funcional debe incluir también magic link; ninguna fila autoriza implementar D4/D5,
 passkeys o recuperación ni selecciona infraestructura productiva.
+
+## Preparación MTEC-37 reconstruida
+
+La preparación local de App Service se conserva en la rama
+`recovery/mtec37-appservice-readiness`. Consultar también el
+[texto preparado para el PR manual](docs/MTEC37_PR_MANUAL.md).
+Consultar [despliegue y límites](docs/MTEC37_DEPLOYMENT_READINESS.md),
+[recuperación y procedencia](docs/MTEC37_RECOVERY_REPORT.md),
+[validación del candidato reconstruido](docs/MTEC37_QA_REVIEW.md) y
+[re-QA de la subfase 2](docs/MTEC37_REQA_REVIEW.md). El dictamen local y los pendientes
+SQL/remotos se registran por separado; no acreditan despliegue.
+
+El perfil `sql-appservice` exige servidor/base explícitos y Managed Identity asignada
+por el sistema, TLS verificado y esquema ya migrado. No tiene fallback a memoria/CLI.
+El puerto de gestión es loopback 9091 (`MANAGEMENT_PORT`), sin detalles. Los perfiles SQL
+añaden validación JDBC bajo demanda a readiness, con caché compartida de 30 s;
+`/health` continúa en el puerto principal. Revisar semántica de readiness en la guía.
+
+El CI existente ahora se activa en `main`, PR hacia `main` o manualmente. Exige 144
+casos normales, incluidas cuatro reglas ArchUnit y regresiones por nombre, y 34 SQL
+reales sobre Linux x86-64 con Docker. Las 34 SQL del candidato aún están pendientes.
+El comando de desarrollo no ejecuta SQL:
+
+```bash
+export JAVA_HOME="$HOME/Developer/MarketTec/tools/jdk-21.0.13+9/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+java -version
+./mvnw --version
+./mvnw --batch-mode clean verify
+python3 -B -m unittest discover -s scripts/tests -v
+python3 scripts/verify-mtec35-reports.py --normal-only
+python3 scripts/smoke-mtec37-jar.py
+```
+
+Esa ubicación JDK es local al equipo de recuperación; CI usa Temurin 21 mediante setup-java.
+No ejecutar migraciones Azure ni publicar automáticamente como parte de estas instrucciones.

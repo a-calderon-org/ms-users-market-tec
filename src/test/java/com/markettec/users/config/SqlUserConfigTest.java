@@ -57,4 +57,70 @@ class SqlUserConfigTest {
         assertEquals(UserDomainException.Reason.UNAUTHORIZED,
                 assertThrows(UserDomainException.class, () -> denied.requireAuthorization(null, null, null)).reason());
     }
+
+    @Test
+    void appServiceDatasourceUsesManagedIdentityWithoutDeveloperFallback() throws Exception {
+        var source = AzureSqlConnection.managedIdentityDataSource("example.database.windows.net", "isolated", 1433);
+        assertEquals("ActiveDirectoryManagedIdentity", source.getAuthentication());
+        assertEquals("true", source.getEncrypt());
+        assertFalse(source.getTrustServerCertificate());
+        assertEquals("*.database.windows.net", source.getHostNameInCertificate());
+        assertTrue(source.getUser() == null || source.getUser().isEmpty());
+        assertEquals(30, source.getLoginTimeout());
+        assertEquals(30000, source.getSocketTimeout());
+    }
+
+    @Test void appServiceRejectsDeveloperProfileBeforeConnecting() { rejectAppServiceCombination("sql-appservice,sql-dev"); }
+    @Test void appServiceRejectsMemoryProfileBeforeConnecting() { rejectAppServiceCombination("sql-appservice,local"); }
+    @Test void appServiceRejectsIntegrationProfileBeforeConnecting() { rejectAppServiceCombination("sql-appservice,sql-integration"); }
+
+    private void rejectAppServiceCombination(String profiles) {
+        contexts.withPropertyValues("spring.profiles.active=" + profiles, "spring.application.name=ms-users",
+                "users.sql.server=example.invalid", "users.sql.database=isolated", "users.sql.port=1433",
+                "users.sql.maximum-pool-size=1").run(context -> {
+                    assertNotNull(context.getStartupFailure());
+                    assertTrue(org.springframework.core.NestedExceptionUtils.getMostSpecificCause(context.getStartupFailure())
+                            .getMessage().contains("exactly one persistence profile"));
+                });
+    }
+
+    @Test
+    void appServiceRequiresExplicitDatabaseConfiguration() {
+        contexts.withBean(org.springframework.context.support.PropertySourcesPlaceholderConfigurer.class)
+                .withPropertyValues("spring.profiles.active=sql-appservice", "spring.application.name=ms-users",
+                        "users.sql.port=1433", "users.sql.maximum-pool-size=1")
+                .run(context -> {
+                    assertNotNull(context.getStartupFailure());
+                    assertTrue(org.springframework.core.NestedExceptionUtils.getMostSpecificCause(context.getStartupFailure())
+                            .getMessage().contains("users.sql.server"));
+                });
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"", " "})
+    void appServiceRejectsBlankDestinationsBeforeAnyConnection(String blank) {
+        var environment = new org.springframework.mock.env.MockEnvironment();
+        environment.setActiveProfiles("sql-appservice");
+        var config = new SqlUserConfig();
+        assertThrows(IllegalArgumentException.class, () -> config.sqlDataSource(environment, blank, "isolated", 1433, 1));
+        assertThrows(IllegalArgumentException.class, () -> config.sqlDataSource(environment, "example.invalid", blank, 1433, 1));
+    }
+
+    @Test
+    void unavailableManagedIdentityFailsStartupWithoutSelectingDeveloperCredentials() throws Exception {
+        var failedIdentity = org.mockito.Mockito.mock(com.microsoft.sqlserver.jdbc.SQLServerDataSource.class);
+        org.mockito.Mockito.when(failedIdentity.getConnection()).thenThrow(new java.sql.SQLException("Managed identity unavailable"));
+        try (var connections = org.mockito.Mockito.mockStatic(AzureSqlConnection.class)) {
+            connections.when(() -> AzureSqlConnection.managedIdentityDataSource("example.invalid", "isolated", 1433))
+                    .thenReturn(failedIdentity);
+            contexts.withPropertyValues("spring.profiles.active=sql-appservice", "spring.application.name=ms-users",
+                    "users.sql.server=example.invalid", "users.sql.database=isolated", "users.sql.port=1433",
+                    "users.sql.maximum-pool-size=1").run(context -> {
+                        assertNotNull(context.getStartupFailure());
+                        assertTrue(org.springframework.core.NestedExceptionUtils.getMostSpecificCause(context.getStartupFailure())
+                                .getMessage().contains("Managed identity unavailable"));
+                    });
+            connections.verify(() -> AzureSqlConnection.dataSource("example.invalid", "isolated", 1433), org.mockito.Mockito.never());
+        }
+    }
 }
