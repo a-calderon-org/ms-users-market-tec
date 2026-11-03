@@ -13,6 +13,12 @@ spring:
 
 # No authentication flow is exposed. The verifier bean is opt-in for a future trusted caller.
 users:
+  internal-jwt:
+    enabled: ${USERS_INTERNAL_JWT_ENABLED:false}
+    issuer: ${USERS_INTERNAL_JWT_ISSUER:}
+    audience: ${USERS_INTERNAL_JWT_AUDIENCE:}
+    active-kid: ${USERS_INTERNAL_JWT_ACTIVE_KID:}
+    keys-json: ${USERS_INTERNAL_JWT_KEYS_JSON:}
   google:
     enabled: ${USERS_GOOGLE_VERIFIER_ENABLED:false}
     audiences: ${USERS_GOOGLE_AUDIENCES:}

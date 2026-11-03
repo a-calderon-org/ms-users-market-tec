@@ -1,5 +1,5 @@
 {
-  "normal_count": 169,
+  "normal_count": 189,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -122,7 +122,29 @@
       "revocationIsIdempotentAndNeverRevives",
       "authorizationAndStoreFailureFailClosed",
       "concurrentRevocationWinsOverSubsequentRenewalAndActivity",
-      "simultaneousRevocationsAreIdempotent"
+      "simultaneousRevocationsAreIdempotent",
+      "authenticatedIssuanceContextRequiresVerifiedLinkedIdentity",
+      "verifiedLoginCanMintIssuanceContextWithoutHttpIds"
+    ],
+    "com.markettec.users.adapters.out.jwt.InternalJwtServiceTest": [
+      "issuesValidRs256TokenFromTrustedActiveSession",
+      "rejectsRevokedSession",
+      "cryptographicVerificationDoesNotClaimLiveRevocationStatus",
+      "rejectsExpiredSession",
+      "rejectsMissingAndFailedSessionAuthority",
+      "tokenNeverExceeds240Seconds",
+      "renewableDeadlineCapsExpiration",
+      "idleDeadlineCapsExpiration",
+      "absoluteDeadlineCapsExpiration",
+      "rejectsWrongSignature",
+      "rejectsWrongIssuerAndAudience",
+      "rejectsUnknownKidAndOtherAlgorithm",
+      "rejectsAtExactExpiryWithoutLeeway",
+      "rotationOverlapsOldPublicAndNewSigningKey",
+      "jwksContainsOnlyPublicMaterial",
+      "rejectsMalformedOversizedAndJoseUrls",
+      "cannotIssueFromArbitraryUnauthenticatedIdentity",
+      "rejectsWeakIncompleteAndMismatchedKeys"
     ]
   }
 }

@@ -601,6 +601,28 @@ las 111 pruebas previas; junto con las 26 de MTEC-37, el inventario normal pasa 
 La suite normal no certifica SQL Server real ni APIM, Google o Azure.
 No se modifican persistencia ni migraciones.
 
+### Fase 1B — JWT internos y JWKS
+
+El componente interno `InternalJwtService` emite RS256 con RSA de al menos 2048 bits
+solo desde `AuthenticatedSession`, una capacidad que `SessionAuthority` crea tras
+evidencia de identidad verificada. Antes de firmar vuelve a consultar la sesión
+autoritaria y exige vigencia. `exp` es el mínimo entre 240 segundos y los tres
+deadlines de sesión, sin renovación implícita. La validación criptográfica comprueba
+firma, `kid`, issuer, audiencia, identidad opaca y tiempos sin tolerancia positiva;
+la comprobación de revocación vigente sigue siendo una responsabilidad separada.
+
+En perfiles SQL, habilitar con `USERS_INTERNAL_JWT_ENABLED=true` y suministrar
+`USERS_INTERNAL_JWT_ISSUER`, `USERS_INTERNAL_JWT_AUDIENCE`,
+`USERS_INTERNAL_JWT_ACTIVE_KID` y `USERS_INTERNAL_JWT_KEYS_JSON` desde configuración
+externa protegida. El JSON es un array de objetos con `kid` y `publicKeyPem`
+(X.509 PEM); solo el `kid` activo lleva `privateKeyPem` (PKCS#8 PEM). Durante
+rotación se conserva la clave pública anterior en el array hasta que expiren
+sus tokens, mientras la nueva clave activa firma. Se rechazan claves débiles,
+duplicadas, incompletas o que no formen un par. `InternalJwtKeyRing.publicJwksJson()`
+entrega solo claves públicas; la ruta HTTP queda pendiente del contrato Draft.
+La contención distribuida por compromiso de clave depende de APIM y los demás
+validadores.
+
 ### Fases posteriores — Proposed, no iniciadas
 
 La arquitectura base ADR-004, B01 D1–D3, B02/B03 y B05/B06 tienen aprobación

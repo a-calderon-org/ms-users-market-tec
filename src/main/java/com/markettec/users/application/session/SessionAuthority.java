@@ -51,6 +51,26 @@ public final class SessionAuthority {
         });
     }
 
+    /** Mint a trusted issuance capability as part of the verified login path. */
+    public AuthenticatedSession createAuthenticated(VerifiedExternalIdentity evidence) {
+        return new AuthenticatedSession(create(evidence).sessionId());
+    }
+
+    /** Reauthenticate an existing session using trusted, freshly verified identity evidence. */
+    public AuthenticatedSession authenticate(VerifiedExternalIdentity evidence, String sessionId) {
+        Objects.requireNonNull(evidence);
+        if (sessionId == null || !sessionId.matches("[0-9a-f]{32}")) throw new SessionRejectedException();
+        return transactions.execute(() -> {
+            var linked = identities.findByKey(evidence.key()).orElseThrow(SessionRejectedException::new);
+            if (linked.provider() != evidence.provider()) throw new SessionRejectedException();
+            Session session = sessions.loadLocked(sessionId).orElseThrow(SessionRejectedException::new);
+            if (!session.validAt(now()) || !session.userId().equals(linked.userId()))
+                throw new SessionRejectedException();
+            users.findById(session.userId()).orElseThrow(SessionRejectedException::new).requireActive();
+            return new AuthenticatedSession(sessionId);
+        });
+    }
+
     /** Snapshot only. Does not extend any deadline. */
     public Optional<Session> current(String sessionId) {
         return transactions.execute(() -> sessions.loadLocked(sessionId).filter(s -> s.validAt(now())));
