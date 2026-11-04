@@ -29,6 +29,13 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
+import java.security.KeyPairGenerator;
+import java.security.KeyStore;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -885,6 +892,183 @@ class SqlUserStoreIT {
                 String[] result = rotated.split(" ");
                 assertThrows(SessionRejectedException.class, () -> authority.recoverCsrf(result[1]));
             }
+        }
+    }
+
+    @Test
+    void independentHttpsListenersShareOneSqlRefreshGeneration() throws Exception {
+        var now = Instant.now();
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        seedGoogle(proof, now);
+        var permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                Clock.systemUTC(), new java.security.SecureRandom(), permit, csrfKeys());
+        var issued = authority.issue(authority.createAuthenticated(proof), a -> "setup-only");
+        var keys = KeyPairGenerator.getInstance("RSA");
+        keys.initialize(2048);
+        var pair = keys.generateKeyPair();
+        String jwtKeys = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(List.of(Map.of(
+                "kid", "sql-test", "publicKeyPem", pem("PUBLIC KEY", pair.getPublic().getEncoded()),
+                "privateKeyPem", pem("PRIVATE KEY", pair.getPrivate().getEncoded()))));
+        var config = server.workerConnection();
+        config.setProperty("csrfKey", TEST_KEY);
+        config.setProperty("jwtKeys", jwtKeys);
+        config.setProperty("operation", "http");
+        var trust = KeyStore.getInstance("PKCS12");
+        try (var input = java.nio.file.Files.newInputStream(java.nio.file.Path.of(config.getProperty("trustStore")))) {
+            trust.load(input, config.getProperty("trustPassword").toCharArray());
+        }
+        var managers = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        managers.init(trust);
+        var ssl = SSLContext.getInstance("TLS");
+        ssl.init(null, managers.getTrustManagers(), null);
+        try (var client = HttpClient.newBuilder().sslContext(ssl).build();
+             var first = new RefreshHttpChild(config); var second = new RefreshHttpChild(config)) {
+            assertNotEquals(first.pid, second.pid);
+            assertNotEquals(first.port, second.port);
+            System.out.println("MTEC40 HTTPS worker PIDs/listeners: " + first.pid + "/" + first.port
+                    + ", " + second.pid + "/" + second.port + "; shared SQL=" + IsolatedSqlServer.DATABASE);
+            var a = client.sendAsync(refreshRequest(first.port, issued.refreshToken(), issued.csrfToken(),
+                    "https://app.markettec.example"), HttpResponse.BodyHandlers.ofString());
+            var b = client.sendAsync(refreshRequest(second.port, issued.refreshToken(), issued.csrfToken(),
+                    "https://app.markettec.example"), HttpResponse.BodyHandlers.ofString());
+            var responses = List.of(a.get(45, TimeUnit.SECONDS), b.get(45, TimeUnit.SECONDS));
+            assertEquals(1, responses.stream().filter(r -> r.statusCode() == 200).count());
+            assertEquals(1, responses.stream().filter(r -> r.statusCode() == 401).count());
+            var winner = responses.stream().filter(r -> r.statusCode() == 200).findFirst().orElseThrow();
+            var loser = responses.stream().filter(r -> r.statusCode() == 401).findFirst().orElseThrow();
+            assertInvalidHttp(loser, issued.refreshToken(), issued.csrfToken());
+            var cookie = winner.headers().firstValue("Set-Cookie").orElseThrow();
+            assertTrue(cookie.startsWith("__Host-mtec-refresh="));
+            for (String attribute : List.of("; Path=/", "; Secure", "; HttpOnly", "; SameSite=Lax"))
+                assertTrue(cookie.contains(attribute));
+            assertFalse(cookie.toLowerCase().contains("domain="));
+            assertEquals("https://app.markettec.example",
+                    winner.headers().firstValue("Access-Control-Allow-Origin").orElseThrow());
+            assertEquals("true", winner.headers().firstValue("Access-Control-Allow-Credentials").orElseThrow());
+            var body = new com.fasterxml.jackson.databind.ObjectMapper().readTree(winner.body());
+            assertTrue(body.path("token").asText().split("\\.").length == 3);
+            assertFalse(body.has("refreshToken"));
+            String next = cookie.substring("__Host-mtec-refresh=".length(), cookie.indexOf(';'));
+            String csrf = body.path("csrfToken").asText();
+            assertEquals(csrf, authority.recoverCsrf(next));
+            assertEquals(1L, jdbc.queryForObject("SELECT current_credential_generation FROM dbo.sessions WHERE session_id=?",
+                    Long.class, issued.sessionId()));
+            assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.session_credential_generations WHERE session_id=? AND consumed_ms IS NULL",
+                    Integer.class, issued.sessionId()));
+            assertInvalidHttp(client.send(refreshRequest(first.port, issued.refreshToken(), issued.csrfToken(),
+                    "https://app.markettec.example"), HttpResponse.BodyHandlers.ofString()),
+                    issued.refreshToken(), issued.csrfToken());
+            assertInvalidHttp(client.send(refreshRequest(second.port, issued.refreshToken(), csrf,
+                    "https://app.markettec.example"), HttpResponse.BodyHandlers.ofString()),
+                    issued.refreshToken(), csrf);
+            assertInvalidHttp(client.send(refreshRequest(first.port, "0".repeat(64), issued.csrfToken(),
+                    "https://app.markettec.example"), HttpResponse.BodyHandlers.ofString()),
+                    "0".repeat(64), issued.csrfToken());
+            assertInvalidHttp(client.send(refreshRequest(second.port, next, "0".repeat(64),
+                    "https://app.markettec.example"), HttpResponse.BodyHandlers.ofString()),
+                    next, "0".repeat(64));
+            assertEquals(csrf, authority.recoverCsrf(next));
+            assertEquals(1L, jdbc.queryForObject("SELECT current_credential_generation FROM dbo.sessions WHERE session_id=?",
+                    Long.class, issued.sessionId()));
+            var forbidden = client.send(refreshRequest(second.port, next, csrf, "https://evil.example"),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(403, forbidden.statusCode());
+            assertTrue(forbidden.headers().firstValue("Access-Control-Allow-Origin").isEmpty());
+            assertTrue(forbidden.headers().firstValue("Set-Cookie").isEmpty());
+            var preflight = HttpRequest.newBuilder(URI.create("https://localhost:" + first.port + "/v1/auth/refresh"))
+                    .header("Origin", "https://app.markettec.example")
+                    .header("Access-Control-Request-Method", "POST")
+                    .header("Access-Control-Request-Headers", "Content-Type,X-MTEC-Client,X-CSRF-Token")
+                    .method("OPTIONS", HttpRequest.BodyPublishers.noBody()).build();
+            assertEquals(204, client.send(preflight, HttpResponse.BodyHandlers.discarding()).statusCode());
+            var usable = client.send(refreshRequest(second.port, next, csrf, "https://app.markettec.example"),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, usable.statusCode());
+            assertEquals(2L, jdbc.queryForObject("SELECT current_credential_generation FROM dbo.sessions WHERE session_id=?",
+                    Long.class, issued.sessionId()));
+            assertInvalidHttp(client.send(refreshRequest(first.port, issued.refreshToken(), issued.csrfToken(),
+                    "https://app.markettec.example"), HttpResponse.BodyHandlers.ofString()),
+                    issued.refreshToken(), issued.csrfToken());
+            assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.session_credential_generations WHERE session_id=? AND consumed_ms IS NULL",
+                    Integer.class, issued.sessionId()));
+        }
+    }
+
+    private static String pem(String type, byte[] encoded) {
+        return "-----BEGIN " + type + "-----\n" + Base64.getEncoder().encodeToString(encoded)
+                + "\n-----END " + type + "-----";
+    }
+
+    private static HttpRequest refreshRequest(int port, String refresh, String csrf, String origin) {
+        return HttpRequest.newBuilder(URI.create("https://localhost:" + port + "/v1/auth/refresh"))
+                .header("Origin", origin).header("X-MTEC-Client", "web")
+                .header("X-CSRF-Token", csrf).header("Cookie", "__Host-mtec-refresh=" + refresh)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"mode\":\"rotate\"}"))
+                .build();
+    }
+
+    private static void assertInvalidHttp(HttpResponse<String> response, String refresh, String csrf) throws Exception {
+        assertEquals(401, response.statusCode());
+        assertEquals("REFRESH_INVALID", new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(response.body()).path("error").path("code").asText());
+        assertTrue(response.headers().firstValue("Set-Cookie").isEmpty());
+        assertFalse(response.body().contains("\"token\""));
+        assertFalse(response.body().contains(refresh));
+        assertFalse(response.body().contains(csrf));
+        assertFalse(response.body().contains("SQLException"));
+    }
+
+    private static final class RefreshHttpChild implements AutoCloseable {
+        final Process process;
+        final BufferedReader output;
+        final OutputStreamWriter input;
+        final long pid;
+        final int port;
+
+        RefreshHttpChild(Properties config) throws Exception {
+            String javaBinary = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString();
+            process = new ProcessBuilder(javaBinary, "-cp", System.getProperty("java.class.path"), RefreshWorker.class.getName())
+                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            output = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+            input = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
+            try {
+                var bytes = new ByteArrayOutputStream();
+                config.store(bytes, "synthetic isolated SQL QA");
+                input.write(Base64.getEncoder().encodeToString(bytes.toByteArray()) + "\n");
+                input.flush();
+                String ready = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        String line;
+                        while ((line = output.readLine()) != null) if (line.startsWith("READY HTTP ")) return line;
+                        return null;
+                    } catch (Exception failure) { throw new CompletionException(failure); }
+                }).get(45, TimeUnit.SECONDS);
+                assertNotNull(ready, "HTTPS child exited before readiness");
+                assertTrue(ready.matches("READY HTTP [0-9]+ [0-9]+"));
+                String[] parts = ready.split(" ");
+                pid = Long.parseLong(parts[2]);
+                port = Integer.parseInt(parts[3]);
+                assertNotEquals(ProcessHandle.current().pid(), pid);
+            } catch (Exception | Error failure) {
+                process.destroyForcibly();
+                process.waitFor(10, TimeUnit.SECONDS);
+                throw failure;
+            }
+        }
+
+        @Override public void close() throws Exception {
+            if (process.isAlive()) { input.write("STOP\n"); input.flush(); }
+            if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                process.destroyForcibly(); process.waitFor(10, TimeUnit.SECONDS);
+            }
+            input.close(); output.close();
+            assertEquals(0, process.exitValue(), "HTTPS child failed");
         }
     }
 
