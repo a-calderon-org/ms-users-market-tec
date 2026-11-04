@@ -980,12 +980,20 @@ class SqlUserStoreIT {
             assertEquals(403, forbidden.statusCode());
             assertTrue(forbidden.headers().firstValue("Access-Control-Allow-Origin").isEmpty());
             assertTrue(forbidden.headers().firstValue("Set-Cookie").isEmpty());
+            assertFalse(forbidden.body().contains(next));
+            assertFalse(forbidden.body().contains(csrf));
             var preflight = HttpRequest.newBuilder(URI.create("https://localhost:" + first.port + "/v1/auth/refresh"))
                     .header("Origin", "https://app.markettec.example")
                     .header("Access-Control-Request-Method", "POST")
                     .header("Access-Control-Request-Headers", "Content-Type,X-MTEC-Client,X-CSRF-Token")
                     .method("OPTIONS", HttpRequest.BodyPublishers.noBody()).build();
             assertEquals(204, client.send(preflight, HttpResponse.BodyHandlers.discarding()).statusCode());
+            var deniedPreflight = HttpRequest.newBuilder(preflight.uri())
+                    .header("Origin", "https://app.markettec.example")
+                    .header("Access-Control-Request-Method", "GET")
+                    .header("Access-Control-Request-Headers", "Content-Type,X-MTEC-Client,X-CSRF-Token")
+                    .method("OPTIONS", HttpRequest.BodyPublishers.noBody()).build();
+            assertEquals(403, client.send(deniedPreflight, HttpResponse.BodyHandlers.discarding()).statusCode());
             var usable = client.send(refreshRequest(second.port, next, csrf, "https://app.markettec.example"),
                     HttpResponse.BodyHandlers.ofString());
             assertEquals(200, usable.statusCode());
