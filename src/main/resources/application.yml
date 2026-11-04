@@ -13,6 +13,9 @@ spring:
 
 # No authentication flow is exposed. The verifier bean is opt-in for a future trusted caller.
 users:
+  csrf:
+    active-kid: ${USERS_CSRF_ACTIVE_KID:}
+    keys-json: ${USERS_CSRF_KEYS_JSON:}
   internal-jwt:
     enabled: ${USERS_INTERNAL_JWT_ENABLED:false}
     issuer: ${USERS_INTERNAL_JWT_ISSUER:}

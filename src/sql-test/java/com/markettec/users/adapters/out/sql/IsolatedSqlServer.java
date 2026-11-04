@@ -38,6 +38,7 @@ final class IsolatedSqlServer implements AutoCloseable {
     private Path temporary;
     private int mappedPort;
     private final java.util.List<SQLServerDataSource> sources = new java.util.ArrayList<>();
+    private SQLServerDataSource restrictedRuntime;
     private final String password = "Sql!" + UUID.randomUUID();
     private final String trustPassword = UUID.randomUUID().toString();
 
@@ -142,6 +143,7 @@ final class IsolatedSqlServer implements AutoCloseable {
     }
 
     SQLServerDataSource restrictedRuntimeSource() throws Exception {
+        if (restrictedRuntime != null) return restrictedRuntime;
         String runtimePassword = "Runtime!" + UUID.randomUUID();
         new JdbcTemplate(source("master")).update("""
                 DECLARE @password nvarchar(128)=?;
@@ -153,12 +155,14 @@ final class IsolatedSqlServer implements AutoCloseable {
         for (String table : new String[]{"users", "profiles", "external_identities", "sessions"}) {
             admin.execute("GRANT SELECT, INSERT, UPDATE ON OBJECT::dbo." + table + " TO mtec35_runtime");
         }
+        admin.execute("GRANT SELECT, INSERT, UPDATE ON OBJECT::dbo.session_credential_generations TO mtec35_runtime");
         admin.execute("GRANT SELECT ON OBJECT::dbo.flyway_schema_history TO mtec35_runtime");
         admin.execute("GRANT VIEW DEFINITION TO mtec35_runtime");
         var runtime = source(DATABASE);
         runtime.setUser("mtec35_runtime");
         runtime.setPassword(runtimePassword);
-        return runtime;
+        restrictedRuntime = runtime;
+        return restrictedRuntime;
     }
 
     void restart() {

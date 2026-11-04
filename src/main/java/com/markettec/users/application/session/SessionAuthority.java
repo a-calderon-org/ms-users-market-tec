@@ -22,9 +22,12 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 import com.markettec.users.domain.model.UserId;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Internal authority. Callers must supply verified evidence and authorize explicit actions. */
 public final class SessionAuthority {
+    private static final Logger LOG = LoggerFactory.getLogger(SessionAuthority.class);
     private final SessionRepository sessions;
     private final ExternalIdentityRepository identities;
     private final UserRepository users;
@@ -32,10 +35,11 @@ public final class SessionAuthority {
     private final Clock clock;
     private final SecureRandom random;
     private final SessionActionAuthorization authorization;
+    private final CsrfKeys csrfKeys;
 
     public SessionAuthority(SessionRepository sessions, ExternalIdentityRepository identities,
                             UserRepository users, UserTransactions transactions, Clock clock, SecureRandom random,
-                            SessionActionAuthorization authorization) {
+                            SessionActionAuthorization authorization, CsrfKeys csrfKeys) {
         this.sessions = Objects.requireNonNull(sessions);
         this.identities = Objects.requireNonNull(identities);
         this.users = Objects.requireNonNull(users);
@@ -43,6 +47,7 @@ public final class SessionAuthority {
         this.clock = Objects.requireNonNull(clock);
         this.random = Objects.requireNonNull(random);
         this.authorization = Objects.requireNonNull(authorization);
+        this.csrfKeys = Objects.requireNonNull(csrfKeys);
     }
 
     /** Trusted verified identity only; no HTTP adapter exposes this operation. */
@@ -136,33 +141,59 @@ public final class SessionAuthority {
             Session session = sessions.loadLocked(authenticated.sessionId()).orElseThrow(SessionRejectedException::new);
             if (!session.validAt(now())) throw new SessionRejectedException();
             String refresh = randomHex(32);
-            String csrf = randomHex(32);
-            sessions.initializeVerifiers(session.sessionId(), new SessionVerifiers(hash(refresh), hash(csrf)));
+            String refreshHash = hash(refresh);
+            String csrf = csrfKeys.derive(csrfKeys.activeKid(), session.sessionId(), 0, refreshHash);
+            sessions.initializeVerifiers(session.sessionId(), new SessionVerifiers(refreshHash, hash(csrf), 0, csrfKeys.activeKid()));
             return tokens(session, jwt.issue(authenticated), refresh, csrf);
         });
     }
 
     /**
-     * The approved browser adapter must prove an explicit user renewal before this is enabled.
+     * Technical credential rotation does not authorize a user renewal or activity.
      * A consumed credential is rejected without grace. It does not revoke an otherwise live
      * session: replay-triggered revocation is a separate policy decision not approved here.
-     * Refresh and CSRF proofs both rotate on success; neither extends idle or absolute time.
+     * Refresh and CSRF proofs both rotate on success; no session deadline changes.
      */
     public SessionTokens refresh(String refresh, String csrf, InternalTokenIssuer jwt) {
         Objects.requireNonNull(jwt);
         if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
         return transactions.execute(() -> {
-            Session before = sessions.loadByRefreshHashLocked(hash(refresh)).orElseThrow(SessionRejectedException::new);
+            String refreshHash = hash(refresh);
+            String csrfHash = hash(csrf);
+            Session before = sessions.loadByRefreshHashLocked(refreshHash).orElse(null);
+            if (before == null) {
+                var consumed = sessions.consumedByRefreshHashLocked(refreshHash);
+                if (consumed.isPresent() && consumed.get().session().validAt(now())
+                        && equal(consumed.get().verifiers().csrfHash(), csrfHash)) {
+                    LOG.warn("Consumed refresh generation reused");
+                    throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
+                }
+                throw new SessionRejectedException();
+            }
             String id = before.sessionId();
             if (!before.validAt(now())) throw new SessionRejectedException();
             SessionVerifiers old = requireCredentials(id, refresh, csrf);
-            authorization.requireRenewal(before);
-            Session after = before.renewAt(now());
             String nextRefresh = randomHex(32);
-            String nextCsrf = randomHex(32);
-            sessions.rotateVerifiers(id, old, new SessionVerifiers(hash(nextRefresh), hash(nextCsrf)));
-            sessions.replace(before, after);
-            return tokens(after, jwt.issue(new AuthenticatedSession(id)), nextRefresh, nextCsrf);
+            String nextHash = hash(nextRefresh);
+            long nextGeneration = old.generation() + 1;
+            String nextCsrf = csrfKeys.derive(csrfKeys.activeKid(), id, nextGeneration, nextHash);
+            sessions.rotateVerifiers(id, old, new SessionVerifiers(nextHash, hash(nextCsrf), nextGeneration, csrfKeys.activeKid()), now());
+            return tokens(before, jwt.issue(new AuthenticatedSession(id)), nextRefresh, nextCsrf);
+        });
+    }
+
+    /** Read-only recovery requiring possession of the current refresh credential. */
+    public String recoverCsrf(String refresh) {
+        if (!validSecret(refresh)) throw new SessionRejectedException();
+        return transactions.execute(() -> {
+            String refreshHash = hash(refresh);
+            Session session = sessions.loadByRefreshHashLocked(refreshHash).orElseThrow(SessionRejectedException::new);
+            if (!session.validAt(now())) throw new SessionRejectedException();
+            SessionVerifiers values = sessions.verifiers(session.sessionId()).orElseThrow(SessionRejectedException::new);
+            if (!equal(values.refreshHash(), refreshHash)) throw new SessionRejectedException();
+            String csrf = csrfKeys.derive(values.keyId(), session.sessionId(), values.generation(), refreshHash);
+            if (!equal(values.csrfHash(), hash(csrf))) throw new SessionRejectedException();
+            return csrf;
         });
     }
 

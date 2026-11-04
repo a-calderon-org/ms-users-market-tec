@@ -1,4 +1,5 @@
 package com.markettec.users.application.session;
+import com.markettec.users.application.session.CsrfKeys;
 
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.memory.InMemoryUserStore;
@@ -69,7 +70,8 @@ class GoogleRegistrationServiceTest {
         public void initializeVerifiers(String id, SessionVerifiers value) {
             if (credentials.putIfAbsent(id, value) != null) throw new IllegalStateException("duplicate");
         }
-        public void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next) {
+        public Optional<ConsumedCredential> consumedByRefreshHashLocked(String hash) { return Optional.empty(); }
+        public void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next, Instant consumedAt) {
             if (!credentials.replace(id, old, next)) throw new IllegalStateException("stale");
         }
     };
@@ -85,7 +87,7 @@ class GoogleRegistrationServiceTest {
                 new SessionActionAuthorization() {
                     public void requireRenewal(Session s) { throw new SessionRejectedException(); }
                     public void requireAdmissibleActivity(Session s) { throw new SessionRejectedException(); }
-                });
+                }, CsrfKeys.fromJson("{\"test\":\"" + java.util.Base64.getEncoder().encodeToString(new byte[32]) + "\"}", "test"));
     }
     private GoogleRegistrationService service() {
         return new GoogleRegistrationService(attemptRepo, tx, verifier, users, links,

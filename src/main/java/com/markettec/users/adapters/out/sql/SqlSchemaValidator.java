@@ -23,6 +23,7 @@ public final class SqlSchemaValidator {
         Map<String, List<String>> primaryKeys = Map.of("users", List.of("user_id"),
                 "profiles", List.of("user_id"), "external_identities", List.of("issuer_hash", "subject_hash"),
                 "sessions", List.of("session_id"),
+                "session_credential_generations", List.of("session_id", "generation"),
                 "recent_authentication_attempts", List.of("attempt_id"),
                 "google_login_intents", List.of("attempt_id"));
         primaryKeys.forEach((table, expected) -> {
@@ -43,6 +44,16 @@ public final class SqlSchemaValidator {
                 """, Integer.class);
         if (refreshIndex == null || refreshIndex != 1)
             throw new UserPersistenceException("Missing unique refresh verifier index");
+        Integer historyIndexes = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys.indexes
+                WHERE object_id=OBJECT_ID('dbo.session_credential_generations')
+                    AND name IN ('ux_session_credential_generations_refresh',
+                                 'ux_session_credential_generations_csrf',
+                                 'ux_session_credential_generations_active')
+                    AND is_unique=1 AND is_disabled=0
+                """, Integer.class);
+        if (historyIndexes == null || historyIndexes != 3)
+            throw new UserPersistenceException("Missing unique credential generation indexes");
         var foreignKeys = Set.copyOf(jdbc.queryForList("""
                 SELECT name FROM sys.foreign_keys WHERE referenced_object_id=OBJECT_ID('dbo.users')
                     AND is_disabled=0 AND is_not_trusted=0 AND delete_referential_action=0
@@ -59,16 +70,25 @@ public final class SqlSchemaValidator {
                 """, Integer.class);
         if (sessionForeignKey == null || sessionForeignKey != 1)
             throw new UserPersistenceException("Missing recent attempt session constraint");
+        Integer generationKeys = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys.foreign_keys WHERE name IN
+                    ('fk_session_credential_generations_session', 'fk_sessions_current_credential_generation')
+                    AND is_disabled=0 AND is_not_trusted=0 AND delete_referential_action=0
+                """, Integer.class);
+        if (generationKeys == null || generationKeys != 2)
+            throw new UserPersistenceException("Missing credential generation constraints");
         var checks = Set.copyOf(jdbc.queryForList("""
                 SELECT name FROM sys.check_constraints WHERE is_disabled=0 AND is_not_trusted=0
                     AND parent_object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'),
                         OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'),
-                        OBJECT_ID('dbo.recent_authentication_attempts'), OBJECT_ID('dbo.google_login_intents'))
+                        OBJECT_ID('dbo.recent_authentication_attempts'), OBJECT_ID('dbo.google_login_intents'),
+                        OBJECT_ID('dbo.session_credential_generations'))
                 """, String.class));
         if (!checks.containsAll(Set.of("ck_users_status", "ck_users_version", "ck_profiles_registered",
                 "ck_profiles_updated", "ck_external_identities_provider", "ck_external_identities_link_status",
                 "ck_sessions_version",
-                "ck_sessions_deadlines", "ck_sessions_credential_pair", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
+                "ck_sessions_deadlines", "ck_sessions_renewed", "ck_sessions_credential_pair", "ck_sessions_credential_generation_pair",
+                "ck_session_credential_generations_number", "ck_session_credential_generations_consumed", "ck_session_csrf_key_id", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
                 "ck_recent_attempt_method", "ck_google_login_lifetime", "ck_google_login_version"))) {
             throw new UserPersistenceException("Missing SQL check constraints");
         }
@@ -78,7 +98,8 @@ public final class SqlSchemaValidator {
                     c.max_length, c.is_nullable FROM sys.columns c
                 WHERE c.object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'),
                     OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'),
-                    OBJECT_ID('dbo.recent_authentication_attempts'), OBJECT_ID('dbo.google_login_intents'))
+                    OBJECT_ID('dbo.recent_authentication_attempts'), OBJECT_ID('dbo.google_login_intents'),
+                        OBJECT_ID('dbo.session_credential_generations'))
                 """, (rs, row) -> Map.entry(rs.getString("table_name") + "." + rs.getString("name"),
                 rs.getString("type_name") + ":" + rs.getInt("max_length") + ":" + rs.getBoolean("is_nullable")))
                 .stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
@@ -111,8 +132,16 @@ public final class SqlSchemaValidator {
             require(columns, "sessions." + name, "bigint:8:false");
         }
         require(columns, "sessions.revoked", "bit:1:false");
+        require(columns, "sessions.renewed_ms", "bigint:8:true");
         require(columns, "sessions.refresh_hash", "char:64:true");
         require(columns, "sessions.csrf_hash", "char:64:true");
+        require(columns, "sessions.current_credential_generation", "bigint:8:true");
+        require(columns, "session_credential_generations.session_id", "char:32:false");
+        require(columns, "session_credential_generations.generation", "bigint:8:false");
+        require(columns, "session_credential_generations.refresh_hash", "char:64:false");
+        require(columns, "session_credential_generations.csrf_hash", "char:64:false");
+        require(columns, "session_credential_generations.csrf_key_id", "varchar:32:true");
+        require(columns, "session_credential_generations.consumed_ms", "bigint:8:true");
         for (String name : List.of("attempt_id", "session_id"))
             require(columns, "recent_authentication_attempts." + name, "char:32:false");
         require(columns, "recent_authentication_attempts.user_id", "varchar:40:false");

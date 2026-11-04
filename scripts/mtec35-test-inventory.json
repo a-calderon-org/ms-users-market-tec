@@ -1,5 +1,5 @@
 {
-  "normal_count": 239,
+  "normal_count": 248,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -28,6 +28,7 @@
     "identityKeysAreExactCaseSensitiveAndHaveNoLengthTruncation",
     "linkingAndDeactivationSerializeAcrossConnections",
     "missingIdsAndIdentitiesReturnEmpty",
+    "migrationRetainsUnknownHistoricalRenewalUntilExplicitRenewal",
     "nestedUnitRollsBackToSavepointWithoutLosingOuterWrites",
     "opaqueRefreshRotatesOnceAcrossConcurrentSqlTransactionsAndRevocation",
     "persistsAndFindsEveryUserAndProfileFieldLosslessly",
@@ -39,6 +40,7 @@
     "recoversInformationAfterSpringContextRestart",
     "registersAndFindsIdentityAndKeepsOriginalEvidenceOnRetry",
     "rejectsOwnerAndProviderConflictsWithoutReassignment",
+    "restrictedRuntimeCanRotateRefreshWithoutDeleteOrDdlPermissions",
     "restrictedRuntimeCanValidateAndPersistWithoutDdlOrDeletePermissions",
     "retainsCommittedAccountAndIdentityAfterDatabaseEngineRestart",
     "rollsBackAllTablesAfterFailureFollowingAllWrites",
@@ -46,6 +48,7 @@
     "sensitiveProfileCommitAndRevocationSerializeOnRealSqlServer",
     "sessionCreationRenewalAndExpiryPersistOnRealSqlServer",
     "sessionRevocationAndRenewalSerializeOnRealSqlServer",
+    "sqlCsrfRecoverySurvivesRestartAndRejectsMissingLegacyAndExpiredKeys",
     "staleAggregateCannotOverwriteCommittedChanges",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",
@@ -137,12 +140,15 @@
       "firstDeadlineExpiresWithoutLeewayOrImplicitRenewal",
       "activityDoesNotRenewWindowAndWindowExpiresAtSixtyMinutes",
       "explicitRenewalCannotExtendAbsoluteDeadline",
+      "explicitRenewalRecordsInstantEvenWhenAbsoluteCapKeepsDeadline",
+      "historicalUnknownRenewalRequiresExplicitRenewalToBecomeKnown",
       "revocationIsIdempotentAndNeverRevives",
       "authorizationAndStoreFailureFailClosed",
       "concurrentRevocationWinsOverSubsequentRenewalAndActivity",
       "simultaneousRevocationsAreIdempotent",
       "authenticatedIssuanceContextRequiresVerifiedLinkedIdentity",
-      "verifiedLoginCanMintIssuanceContextWithoutHttpIds"
+      "verifiedLoginCanMintIssuanceContextWithoutHttpIds",
+      "technicalRefreshRotatesCredentialsWithoutRenewalOrActivity"
     ],
     "com.markettec.users.adapters.out.jwt.InternalJwtServiceTest": [
       "issuesValidRs256TokenFromTrustedActiveSession",
@@ -212,7 +218,8 @@
       "enabledConstructorRequiresExplicitVerifiedHttpsTopology"
     ],
     "com.markettec.users.adapters.in.web.GoogleHttpDisabledTest": [
-      "defaultApplicationDoesNotExposeGoogleAuthRoutes"
+      "defaultApplicationDoesNotExposeGoogleAuthRoutes",
+      "defaultApplicationDoesNotExposeB3AuthRoutes"
     ]
   }
 }
