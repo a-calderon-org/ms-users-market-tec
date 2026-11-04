@@ -201,6 +201,12 @@ class GoogleAuthControllerTest {
     @Test void registrationDisabledByDefaultWhileLoginRemainsAvailable() throws Exception {
         var blocked = new GoogleAuthController(login, registration, sessions, users, clock, Set.of(ORIGIN));
         var blockedMvc = MockMvcBuilders.standaloneSetup(blocked).build();
+        when(login.begin()).thenReturn(new GoogleLoginService.Challenge(ATTEMPT_ID, "d".repeat(64),
+                SECRET, clock.instant().plusSeconds(300)));
+        blockedMvc.perform(post("/v1/auth/attempts").header("Origin", ORIGIN)
+                .header("X-MTEC-Client", "web").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"method\":\"google\",\"purpose\":\"login\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.purpose").value("login"));
         blockedMvc.perform(post("/v1/auth/attempts").header("Origin", ORIGIN).header("X-MTEC-Client", "web")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"method\":\"google\",\"purpose\":\"register\"}"))
