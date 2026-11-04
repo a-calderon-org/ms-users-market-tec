@@ -109,8 +109,12 @@ public final class RefreshWorker {
                 Map.entry("users.session.http.public-api-origin", "https://api.markettec.example"),
                 Map.entry("users.session.http.https-topology-verified", "true"));
         try (var context = new SpringApplicationBuilder(UsersApplication.class)
-                .properties(settings)
-                .initializers(application -> application.getBeanFactory().registerSingleton("dataSource", source))
+                .profiles("sql-integration")
+                .initializers(application -> {
+                    application.getEnvironment().getPropertySources().addFirst(
+                            new org.springframework.core.env.MapPropertySource("mtec40-https-qa", settings));
+                    application.getBeanFactory().registerSingleton("dataSource", source);
+                })
                 .run()) {
             int port = ((ServletWebServerApplicationContext) context).getWebServer().getPort();
             System.out.println("READY HTTP " + ProcessHandle.current().pid() + " " + port);
