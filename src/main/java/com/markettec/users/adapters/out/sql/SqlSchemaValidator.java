@@ -87,7 +87,7 @@ public final class SqlSchemaValidator {
         if (!checks.containsAll(Set.of("ck_users_status", "ck_users_version", "ck_profiles_registered",
                 "ck_profiles_updated", "ck_external_identities_provider", "ck_external_identities_link_status",
                 "ck_sessions_version",
-                "ck_sessions_deadlines", "ck_sessions_credential_pair", "ck_sessions_credential_generation_pair",
+                "ck_sessions_deadlines", "ck_sessions_renewed", "ck_sessions_credential_pair", "ck_sessions_credential_generation_pair",
                 "ck_session_credential_generations_number", "ck_session_credential_generations_consumed", "ck_session_csrf_key_id", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
                 "ck_recent_attempt_method", "ck_google_login_lifetime", "ck_google_login_version"))) {
             throw new UserPersistenceException("Missing SQL check constraints");
@@ -132,6 +132,7 @@ public final class SqlSchemaValidator {
             require(columns, "sessions." + name, "bigint:8:false");
         }
         require(columns, "sessions.revoked", "bit:1:false");
+        require(columns, "sessions.renewed_ms", "bigint:8:true");
         require(columns, "sessions.refresh_hash", "char:64:true");
         require(columns, "sessions.csrf_hash", "char:64:true");
         require(columns, "sessions.current_credential_generation", "bigint:8:true");

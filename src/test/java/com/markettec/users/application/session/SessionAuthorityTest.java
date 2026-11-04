@@ -66,6 +66,7 @@ class SessionAuthorityTest {
         assertEquals(32, s.sessionId().length());
         assertEquals(s, sessions.loadLocked(s.sessionId()).orElseThrow());
         assertEquals(start.plus(Duration.ofMinutes(60)), s.renewableUntil());
+        assertEquals(start, s.requireRenewedAt());
         assertEquals(start.plus(Duration.ofMinutes(30)), s.idleUntil());
         assertEquals(start.plus(Duration.ofHours(8)), s.absoluteUntil());
         assertTrue(authority(allow).current(s.sessionId()).isPresent());
@@ -133,6 +134,35 @@ class SessionAuthorityTest {
         clock.set(start.plus(Duration.ofHours(8)));
         assertTrue(authority(allow).current(s.sessionId()).isEmpty());
         assertThrows(SessionRejectedException.class, () -> authority(allow).recordAdmissibleActivity(s.sessionId()));
+    }
+
+    @Test void explicitRenewalRecordsInstantEvenWhenAbsoluteCapKeepsDeadline() {
+        Session s = create();
+        for (int minute = 29; minute <= 435; minute += 29) {
+            clock.set(start.plus(Duration.ofMinutes(minute)));
+            authority(allow).recordAdmissibleActivity(s.sessionId());
+            authority(allow).renew(s.sessionId());
+        }
+        Session first = sessions.loadLocked(s.sessionId()).orElseThrow();
+        assertEquals(start.plus(Duration.ofMinutes(435)), first.requireRenewedAt());
+        assertEquals(first.absoluteUntil(), first.renewableUntil());
+        clock.set(start.plus(Duration.ofMinutes(450)));
+        Session second = authority(allow).renew(s.sessionId());
+        assertEquals(first.renewableUntil(), second.renewableUntil());
+        assertEquals(start.plus(Duration.ofMinutes(450)), second.requireRenewedAt());
+        assertEquals(first.version() + 1, second.version());
+        authority(allow).revoke(s.sessionId());
+        assertEquals(second.requireRenewedAt(), sessions.loadLocked(s.sessionId()).orElseThrow().requireRenewedAt());
+    }
+
+    @Test void historicalUnknownRenewalRequiresExplicitRenewalToBecomeKnown() {
+        Session s = create();
+        Session historical = new Session(s.sessionId(), s.userId(), s.createdAt(), null,
+                s.renewableUntil(), s.lastActivityAt(), s.idleUntil(), s.absoluteUntil(), false, 1);
+        assertThrows(SessionRejectedException.class, historical::requireRenewedAt);
+        assertNull(historical.activityAt(start.plusSeconds(1)).renewedAt());
+        assertNull(historical.revoke().renewedAt());
+        assertEquals(start.plusSeconds(1), historical.renewAt(start.plusSeconds(1)).requireRenewedAt());
     }
 
     @Test void revocationIsIdempotentAndNeverRevives() {

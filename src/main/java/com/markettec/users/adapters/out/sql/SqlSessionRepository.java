@@ -27,9 +27,9 @@ public final class SqlSessionRepository implements SessionRepository {
     @Override public void insert(Session s) {
         requireTransaction();
         jdbc.update("""
-            INSERT INTO dbo.sessions(session_id,user_id,created_ms,renewable_until_ms,last_activity_ms,
-                idle_until_ms,absolute_until_ms,revoked,version) VALUES (?,?,?,?,?,?,?,?,?)
-            """, s.sessionId(), s.userId().value(), ms(s.createdAt()), ms(s.renewableUntil()),
+            INSERT INTO dbo.sessions(session_id,user_id,created_ms,renewed_ms,renewable_until_ms,last_activity_ms,
+                idle_until_ms,absolute_until_ms,revoked,version) VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, s.sessionId(), s.userId().value(), ms(s.createdAt()), ms(s.requireRenewedAt()), ms(s.renewableUntil()),
                 ms(s.lastActivityAt()), ms(s.idleUntil()), ms(s.absoluteUntil()), s.revoked(), s.version());
     }
 
@@ -37,7 +37,7 @@ public final class SqlSessionRepository implements SessionRepository {
         requireTransaction();
         Objects.requireNonNull(id);
         return jdbc.query("""
-            SELECT session_id,user_id,created_ms,renewable_until_ms,last_activity_ms,
+            SELECT session_id,user_id,created_ms,renewed_ms,renewable_until_ms,last_activity_ms,
                 idle_until_ms,absolute_until_ms,revoked,version
             FROM dbo.sessions WITH (UPDLOCK,HOLDLOCK) WHERE session_id=?
             """, (rs, row) -> read(rs), id).stream().findFirst();
@@ -47,7 +47,7 @@ public final class SqlSessionRepository implements SessionRepository {
         requireTransaction();
         if (hash == null || !hash.matches("[0-9a-f]{64}")) throw new UserPersistenceException("Invalid verifier");
         return jdbc.query("""
-            SELECT session_id,user_id,created_ms,renewable_until_ms,last_activity_ms,
+            SELECT session_id,user_id,created_ms,renewed_ms,renewable_until_ms,last_activity_ms,
                 idle_until_ms,absolute_until_ms,revoked,version
             FROM dbo.sessions WITH (UPDLOCK,HOLDLOCK) WHERE refresh_hash=?
             """, (rs, row) -> read(rs), hash).stream().findFirst();
@@ -58,12 +58,13 @@ public final class SqlSessionRepository implements SessionRepository {
         if (!before.sessionId().equals(after.sessionId()) || !before.userId().equals(after.userId())
                 || after.version() != before.version() + 1) throw new UserPersistenceException("Invalid session update");
         int changed = jdbc.update("""
-            UPDATE dbo.sessions SET renewable_until_ms=?,last_activity_ms=?,idle_until_ms=?,
+            UPDATE dbo.sessions SET renewed_ms=?,renewable_until_ms=?,last_activity_ms=?,idle_until_ms=?,
                 revoked=?,version=?,refresh_hash=CASE WHEN ?=1 THEN NULL ELSE refresh_hash END,
                 csrf_hash=CASE WHEN ?=1 THEN NULL ELSE csrf_hash END,
                 current_credential_generation=CASE WHEN ?=1 THEN NULL ELSE current_credential_generation END
             WHERE session_id=? AND version=?
-            """, ms(after.renewableUntil()), ms(after.lastActivityAt()), ms(after.idleUntil()),
+            """, after.renewedAt() == null ? null : ms(after.renewedAt()),
+                ms(after.renewableUntil()), ms(after.lastActivityAt()), ms(after.idleUntil()),
                 after.revoked(), after.version(), after.revoked(), after.revoked(), after.revoked(),
                 before.sessionId(), before.version());
         if (changed != 1) throw new UserPersistenceException("Concurrent session update");
@@ -147,7 +148,9 @@ public final class SqlSessionRepository implements SessionRepository {
     private static long ms(Instant value) { return value.toEpochMilli(); }
     private static Session read(ResultSet rs) throws SQLException {
         return new Session(rs.getString("session_id").trim(), new UserId(rs.getString("user_id")),
-                Instant.ofEpochMilli(rs.getLong("created_ms")), Instant.ofEpochMilli(rs.getLong("renewable_until_ms")),
+                Instant.ofEpochMilli(rs.getLong("created_ms")),
+                rs.getObject("renewed_ms", Long.class) == null ? null : Instant.ofEpochMilli(rs.getLong("renewed_ms")),
+                Instant.ofEpochMilli(rs.getLong("renewable_until_ms")),
                 Instant.ofEpochMilli(rs.getLong("last_activity_ms")), Instant.ofEpochMilli(rs.getLong("idle_until_ms")),
                 Instant.ofEpochMilli(rs.getLong("absolute_until_ms")), rs.getBoolean("revoked"), rs.getLong("version"));
     }

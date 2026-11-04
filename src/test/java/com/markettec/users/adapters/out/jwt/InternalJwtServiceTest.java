@@ -139,7 +139,7 @@ class InternalJwtServiceTest {
 
     @Test void renewableDeadlineCapsExpiration() {
         Instant created = NOW.minusSeconds(3420);
-        Session near = new Session(SID, USER, created, NOW.plusSeconds(180), NOW,
+        Session near = new Session(SID, USER, created, created, NOW.plusSeconds(180), NOW,
                 NOW.plusSeconds(1800), created.plus(Session.ABSOLUTE), false, 1);
         InternalJwtService service = service();
         assertEquals(NOW.plusSeconds(180), service.verify(issue(service, near)).expiresAt());
@@ -153,7 +153,7 @@ class InternalJwtServiceTest {
 
     @Test void absoluteDeadlineCapsExpiration() {
         Instant created = NOW.minusSeconds(8 * 3600 - 120);
-        Session near = new Session(SID, USER, created, NOW.plusSeconds(120), NOW,
+        Session near = new Session(SID, USER, created, created, NOW.plusSeconds(120), NOW,
                 NOW.plusSeconds(1800), NOW.plusSeconds(120), false, 1);
         InternalJwtService service = service();
         assertEquals(NOW.plusSeconds(120), service.verify(issue(service, near)).expiresAt());

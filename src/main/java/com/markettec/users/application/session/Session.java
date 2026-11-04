@@ -6,7 +6,7 @@ import java.time.Instant;
 import java.util.Objects;
 
 /** Immutable server-owned session state. Equality with any deadline means expired. */
-public record Session(String sessionId, UserId userId, Instant createdAt, Instant renewableUntil,
+public record Session(String sessionId, UserId userId, Instant createdAt, Instant renewedAt, Instant renewableUntil,
                       Instant lastActivityAt, Instant idleUntil, Instant absoluteUntil,
                       boolean revoked, long version) {
     public static final Duration WINDOW = Duration.ofMinutes(60);
@@ -22,14 +22,21 @@ public record Session(String sessionId, UserId userId, Instant createdAt, Instan
         if (renewableUntil.isAfter(absoluteUntil) || !renewableUntil.isAfter(createdAt)
                 || !createdAt.plus(ABSOLUTE).equals(absoluteUntil)
                 || !lastActivityAt.plus(IDLE).equals(idleUntil)
-                || lastActivityAt.isBefore(createdAt) || lastActivityAt.isAfter(absoluteUntil)) {
+                || lastActivityAt.isBefore(createdAt) || lastActivityAt.isAfter(absoluteUntil)
+                || (renewedAt != null && (renewedAt.isBefore(createdAt) || renewedAt.isAfter(absoluteUntil)))) {
             throw new IllegalArgumentException("Invalid session deadlines");
         }
     }
 
     public static Session start(String id, UserId user, Instant now) {
-        return new Session(id, user, now, now.plus(WINDOW), now, now.plus(IDLE),
+        return new Session(id, user, now, now, now.plus(WINDOW), now, now.plus(IDLE),
                 now.plus(ABSOLUTE), false, 0);
+    }
+
+    /** Historical sessions may lack evidence of their last explicit renewal. */
+    public Instant requireRenewedAt() {
+        if (renewedAt == null) throw new SessionRejectedException();
+        return renewedAt;
     }
 
     public Instant deadline() {
@@ -42,7 +49,7 @@ public record Session(String sessionId, UserId userId, Instant createdAt, Instan
     }
 
     public Session revoke() {
-        return revoked ? this : new Session(sessionId, userId, createdAt, renewableUntil,
+        return revoked ? this : new Session(sessionId, userId, createdAt, renewedAt, renewableUntil,
                 lastActivityAt, idleUntil, absoluteUntil, true, version + 1);
     }
 
@@ -50,14 +57,14 @@ public record Session(String sessionId, UserId userId, Instant createdAt, Instan
         requireValid(now);
         Instant next = now.plus(WINDOW);
         if (next.isAfter(absoluteUntil)) next = absoluteUntil;
-        return new Session(sessionId, userId, createdAt, next, lastActivityAt, idleUntil,
+        return new Session(sessionId, userId, createdAt, now, next, lastActivityAt, idleUntil,
                 absoluteUntil, false, version + 1);
     }
 
     public Session activityAt(Instant now) {
         requireValid(now);
         if (now.isBefore(lastActivityAt)) throw new SessionRejectedException();
-        return new Session(sessionId, userId, createdAt, renewableUntil, now, now.plus(IDLE),
+        return new Session(sessionId, userId, createdAt, renewedAt, renewableUntil, now, now.plus(IDLE),
                 absoluteUntil, false, version + 1);
     }
 

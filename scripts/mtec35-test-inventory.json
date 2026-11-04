@@ -1,5 +1,5 @@
 {
-  "normal_count": 246,
+  "normal_count": 248,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -28,6 +28,7 @@
     "identityKeysAreExactCaseSensitiveAndHaveNoLengthTruncation",
     "linkingAndDeactivationSerializeAcrossConnections",
     "missingIdsAndIdentitiesReturnEmpty",
+    "migrationRetainsUnknownHistoricalRenewalUntilExplicitRenewal",
     "nestedUnitRollsBackToSavepointWithoutLosingOuterWrites",
     "opaqueRefreshRotatesOnceAcrossConcurrentSqlTransactionsAndRevocation",
     "persistsAndFindsEveryUserAndProfileFieldLosslessly",
@@ -139,6 +140,8 @@
       "firstDeadlineExpiresWithoutLeewayOrImplicitRenewal",
       "activityDoesNotRenewWindowAndWindowExpiresAtSixtyMinutes",
       "explicitRenewalCannotExtendAbsoluteDeadline",
+      "explicitRenewalRecordsInstantEvenWhenAbsoluteCapKeepsDeadline",
+      "historicalUnknownRenewalRequiresExplicitRenewalToBecomeKnown",
       "revocationIsIdempotentAndNeverRevives",
       "authorizationAndStoreFailureFailClosed",
       "concurrentRevocationWinsOverSubsequentRenewalAndActivity",

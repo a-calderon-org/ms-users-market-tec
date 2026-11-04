@@ -42,6 +42,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Timeout(180)
 class SqlUserStoreIT {
+    private static final String HISTORICAL_USER = "usr_00000000-0000-4000-8000-000000000000";
     private static final String TEST_KEY = Base64.getEncoder().encodeToString(new byte[32]);
     private static CsrfKeys csrfKeys() {
         return CsrfKeys.fromJson("{\"sql-test\":\"" + TEST_KEY + "\"}", "sql-test");
@@ -65,9 +66,29 @@ class SqlUserStoreIT {
             assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM sys.tables WHERE is_ms_shipped=0", Integer.class));
             assertEquals("SQL_Latin1_General_CP1_CI_AS", jdbc.queryForObject(
                     "SELECT CONVERT(varchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))", String.class));
+            Flyway throughV9 = Flyway.configure().dataSource(source).defaultSchema("dbo")
+                    .target("9").baselineOnMigrate(false).cleanDisabled(true).load();
+            assertEquals(9, throughV9.migrate().migrationsExecuted);
+            long created = Instant.parse("2026-11-03T12:00:00Z").toEpochMilli();
+            jdbc.update("INSERT INTO dbo.users(user_id,status) VALUES (?,'ACTIVE')", HISTORICAL_USER);
+            jdbc.update("""
+                INSERT INTO dbo.profiles(user_id,nombre_usuario,nombre,apellidos,correo,foto_perfil,
+                    registered_second,registered_nano,updated_second,updated_nano,verificado)
+                VALUES (?,?,?,?,?,?,0,0,0,0,0)
+                """, HISTORICAL_USER, "historical", "Historical", "Session",
+                    "historical@example.invalid", "https://example.invalid/historical");
+            for (int version = 0; version <= 1; version++) {
+                jdbc.update("""
+                    INSERT INTO dbo.sessions(session_id,user_id,created_ms,renewable_until_ms,
+                        last_activity_ms,idle_until_ms,absolute_until_ms,revoked,version)
+                    VALUES (?,?,?,?,?,?,?,0,?)
+                    """, version == 0 ? "a".repeat(32) : "b".repeat(32), HISTORICAL_USER, created,
+                        created + 3_600_000, created, created + 1_800_000,
+                        created + 28_800_000, version);
+            }
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(9, flyway.migrate().migrationsExecuted);
+            assertEquals(1, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -524,10 +545,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("9", flyway.info().current().getVersion().getVersion());
-        assertEquals(9, flyway.info().applied().length);
+        assertEquals("10", flyway.info().current().getVersion().getVersion());
+        assertEquals(10, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(9, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(10, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -567,6 +588,41 @@ class SqlUserStoreIT {
     }
 
     @Test
+    void migrationRetainsUnknownHistoricalRenewalUntilExplicitRenewal() {
+        var repository = new SqlSessionRepository(jdbc);
+        String neverRenewed = "a".repeat(32);
+        String uncertain = "b".repeat(32);
+        Session known = store.execute(() -> repository.loadLocked(neverRenewed).orElseThrow());
+        Session unknown = store.execute(() -> repository.loadLocked(uncertain).orElseThrow());
+        assertEquals(known.createdAt(), known.requireRenewedAt());
+        assertNull(unknown.renewedAt());
+        assertThrows(SessionRejectedException.class, unknown::requireRenewedAt);
+        assertEquals(0L, known.version());
+        assertEquals(1L, unknown.version());
+        Instant now = unknown.createdAt().plusSeconds(60);
+        store.execute(() -> {
+            Session before = repository.loadLocked(uncertain).orElseThrow();
+            repository.replace(before, before.activityAt(now));
+            return null;
+        });
+        assertNull(store.execute(() -> repository.loadLocked(uncertain).orElseThrow()).renewedAt());
+        store.execute(() -> {
+            Session before = repository.loadLocked(uncertain).orElseThrow();
+            repository.replace(before, before.renewAt(now.plusSeconds(1)));
+            return null;
+        });
+        assertEquals(now.plusSeconds(1), store.execute(() -> repository.loadLocked(uncertain).orElseThrow())
+                .requireRenewedAt());
+        assertThrows(IllegalStateException.class, () -> store.execute(() -> {
+            Session before = repository.loadLocked(uncertain).orElseThrow();
+            repository.replace(before, before.renewAt(now.plusSeconds(2)));
+            throw new IllegalStateException("rollback");
+        }));
+        assertEquals(now.plusSeconds(1), store.execute(() -> repository.loadLocked(uncertain).orElseThrow())
+                .requireRenewedAt());
+    }
+
+    @Test
     void sessionCreationRenewalAndExpiryPersistOnRealSqlServer() {
         var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
                 new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
@@ -581,10 +637,18 @@ class SqlUserStoreIT {
                 Clock.fixed(instant, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
 
         Session renewed = authorityAt.apply(start).create(proof);
+        assertEquals(start, renewed.requireRenewedAt());
+        assertEquals(start.toEpochMilli(), jdbc.queryForObject("SELECT renewed_ms FROM dbo.sessions WHERE session_id=?",
+                Long.class, renewed.sessionId()));
         assertEquals(0L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
                 Long.class, renewed.sessionId()));
         authorityAt.apply(start.plusSeconds(20 * 60)).recordAdmissibleActivity(renewed.sessionId());
+        assertEquals(start, authorityAt.apply(start.plusSeconds(20 * 60)).current(renewed.sessionId())
+                .orElseThrow().requireRenewedAt());
         Session afterRenewal = authorityAt.apply(start.plusSeconds(25 * 60)).renew(renewed.sessionId());
+        assertEquals(start.plusSeconds(25 * 60), afterRenewal.requireRenewedAt());
+        assertEquals(afterRenewal.requireRenewedAt(), store.execute(() -> new SqlSessionRepository(jdbc)
+                .loadLocked(renewed.sessionId()).orElseThrow()).requireRenewedAt());
         assertEquals(start.plusSeconds(85 * 60), afterRenewal.renewableUntil());
         assertEquals(2L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
                 Long.class, renewed.sessionId()));
