@@ -8,7 +8,7 @@ public interface UserUseCases {
     /** Trusted internal provisioning only; does not authenticate or verify the address. */
     User createUser(Email email, ProfileDetails details, URI photo);
 
-    /** Caller already verified identity and separately authorized new-account provisioning. */
+    /** Legacy internal provisioning for non-Google identities only. Google enrollment uses its own verified flow. */
     User registerVerifiedIdentity(VerifiedExternalIdentity identity, ProfileDetails details, URI photo);
 
     /**

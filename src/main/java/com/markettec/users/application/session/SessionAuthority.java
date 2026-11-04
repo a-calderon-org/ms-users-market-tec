@@ -5,6 +5,10 @@ import com.markettec.users.application.ports.out.ExternalIdentityRepository;
 import com.markettec.users.application.ports.out.UserRepository;
 import com.markettec.users.application.ports.out.UserTransactions;
 import com.markettec.users.domain.model.User;
+import com.markettec.users.domain.model.ExternalIdentityKey;
+import com.markettec.users.domain.model.IdentityProvider;
+import com.markettec.users.domain.model.IdentityLinkStatus;
+import com.markettec.users.application.ports.out.VerifiedGoogleIdentity;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
@@ -42,7 +46,8 @@ public final class SessionAuthority {
         Objects.requireNonNull(evidence);
         return transactions.execute(() -> {
             var linked = identities.findByKey(evidence.key()).orElseThrow(SessionRejectedException::new);
-            if (linked.provider() != evidence.provider()) throw new SessionRejectedException();
+            if (linked.provider() != evidence.provider() || linked.status() != IdentityLinkStatus.ACTIVE)
+                throw new SessionRejectedException();
             User user = users.findById(linked.userId()).orElseThrow(SessionRejectedException::new);
             user.requireActive();
             byte[] bytes = new byte[16];
@@ -58,13 +63,32 @@ public final class SessionAuthority {
         return new AuthenticatedSession(create(evidence).sessionId());
     }
 
+    /** Google subject resolves only through an existing exact issuer/subject link. */
+    public AuthenticatedSession createGoogle(VerifiedGoogleIdentity evidence) {
+        Objects.requireNonNull(evidence);
+        return transactions.execute(() -> {
+            var key = new ExternalIdentityKey(evidence.issuer(), evidence.subject());
+            var linked = identities.findByKey(key).orElseThrow(SessionRejectedException::new);
+            if (linked.provider() != IdentityProvider.GOOGLE || linked.status() != IdentityLinkStatus.ACTIVE)
+                throw new SessionRejectedException();
+            User user = users.findById(linked.userId()).orElseThrow(SessionRejectedException::new);
+            user.requireActive();
+            byte[] bytes = new byte[16];
+            random.nextBytes(bytes);
+            Session session = Session.start(HexFormat.of().formatHex(bytes), user.userId(), now());
+            sessions.insert(session);
+            return new AuthenticatedSession(session.sessionId());
+        });
+    }
+
     /** Reauthenticate an existing session using trusted, freshly verified identity evidence. */
     public AuthenticatedSession authenticate(VerifiedExternalIdentity evidence, String sessionId) {
         Objects.requireNonNull(evidence);
         if (sessionId == null || !sessionId.matches("[0-9a-f]{32}")) throw new SessionRejectedException();
         return transactions.execute(() -> {
             var linked = identities.findByKey(evidence.key()).orElseThrow(SessionRejectedException::new);
-            if (linked.provider() != evidence.provider()) throw new SessionRejectedException();
+            if (linked.provider() != evidence.provider() || linked.status() != IdentityLinkStatus.ACTIVE)
+                throw new SessionRejectedException();
             Session session = sessions.loadLocked(sessionId).orElseThrow(SessionRejectedException::new);
             if (!session.validAt(now()) || !session.userId().equals(linked.userId()))
                 throw new SessionRejectedException();

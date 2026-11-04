@@ -6,6 +6,7 @@ import com.markettec.users.adapters.out.sql.SqlSchemaValidator;
 import com.markettec.users.adapters.out.sql.SqlUserStore;
 import com.markettec.users.adapters.out.sql.SqlSessionRepository;
 import com.markettec.users.adapters.out.sql.SqlRecentAttemptRepository;
+import com.markettec.users.adapters.out.sql.SqlGoogleLoginIntentRepository;
 import com.markettec.users.application.session.*;
 import com.markettec.users.application.ports.in.UserUseCases;
 import com.markettec.users.application.ports.out.IdentityLinkAuthorization;
@@ -88,6 +89,11 @@ public class SqlUserConfig {
     @Bean
     SqlRecentAttemptRepository sqlRecentAttemptRepository(DataSource source) {
         return new SqlRecentAttemptRepository(new JdbcTemplate(source));
+    }
+
+    @Bean
+    SqlGoogleLoginIntentRepository sqlGoogleLoginIntentRepository(DataSource source) {
+        return new SqlGoogleLoginIntentRepository(new JdbcTemplate(source));
     }
 
     @Bean

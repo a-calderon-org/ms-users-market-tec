@@ -21,6 +21,8 @@ users:
     keys-json: ${USERS_INTERNAL_JWT_KEYS_JSON:}
   google:
     enabled: ${USERS_GOOGLE_VERIFIER_ENABLED:false}
+    login-enabled: ${USERS_GOOGLE_LOGIN_ENABLED:false}
+    login-audience: ${USERS_GOOGLE_LOGIN_AUDIENCE:}
     audiences: ${USERS_GOOGLE_AUDIENCES:}
     issuers: ${USERS_GOOGLE_ISSUERS:https://accounts.google.com,accounts.google.com}
     clock-skew: ${USERS_GOOGLE_CLOCK_SKEW:30s}

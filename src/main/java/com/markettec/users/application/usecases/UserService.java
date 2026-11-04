@@ -43,6 +43,9 @@ public final class UserService implements UserUseCases {
     @Override
     public User registerVerifiedIdentity(VerifiedExternalIdentity identity, ProfileDetails details, URI photo) {
         Objects.requireNonNull(identity);
+        // Generic claims are insufficient for Google enrollment or historical-link access.
+        if (identity.provider() == IdentityProvider.GOOGLE)
+            throw new UserDomainException(UNAUTHORIZED);
         return transactions.execute(() -> {
             var existing = identities.findByKey(identity.key());
             if (existing.isPresent()) {
@@ -61,6 +64,8 @@ public final class UserService implements UserUseCases {
     @Override
     public Optional<UserId> resolveVerifiedIdentity(VerifiedExternalIdentity identity) {
         Objects.requireNonNull(identity);
+        if (identity.provider() == IdentityProvider.GOOGLE)
+            throw new UserDomainException(UNAUTHORIZED);
         return transactions.execute(() -> identities.findByKey(identity.key()).map(existing -> {
             requireSameProvider(existing, identity);
             return activeUser(existing.userId()).userId();
@@ -74,6 +79,8 @@ public final class UserService implements UserUseCases {
         Objects.requireNonNull(identity);
         return transactions.execute(() -> {
             User user = activeUser(target);
+            if (identity.provider() == IdentityProvider.GOOGLE)
+                throw new UserDomainException(UNAUTHORIZED);
             linkAuthorization.requireAuthorization(owner, target, identity);
             ExternalIdentity linked = identities.insertOrGet(new ExternalIdentity(identity.provider(),
                     identity.key(), target, identity.email()));

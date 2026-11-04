@@ -62,6 +62,15 @@ public final class InMemoryUserStore implements UserRepository, ExternalIdentity
     }
 
     @Override
+    public synchronized void replaceStatus(ExternalIdentity expected, IdentityLinkStatus status) {
+        Objects.requireNonNull(expected);
+        Objects.requireNonNull(status);
+        if (!identities.replace(expected.key(), expected, expected.withStatus(status))) {
+            throw new UserDomainException(CONCURRENT_MODIFICATION);
+        }
+    }
+
+    @Override
     public synchronized ExternalIdentity insertOrGet(ExternalIdentity identity) {
         Objects.requireNonNull(identity);
         ExternalIdentity existing = identities.get(identity.key());

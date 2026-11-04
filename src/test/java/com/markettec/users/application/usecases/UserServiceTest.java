@@ -45,7 +45,7 @@ class UserServiceTest {
     }
 
     private VerifiedExternalIdentity google(String subject) {
-        return new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+        return new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL,
                 new ExternalIdentityKey("https://accounts.google.com", subject), EMAIL);
     }
 
@@ -69,14 +69,11 @@ class UserServiceTest {
 
     @Test
     void googleRegistrationIsVerifiedAndIndependentOfExternalSubject() {
-        VerifiedExternalIdentity google = google("123456789012345678901");
-        User user = service.registerVerifiedIdentity(google, DETAILS, PHOTO);
-        assertNotEquals(google.key().subject(), user.userId().value());
-        assertFalse(user.userId().value().contains("ana"));
-        assertTrue(user.profile().verificado());
-        ExternalIdentity identity = store.findByKey(google.key()).orElseThrow();
-        assertEquals(user.userId(), identity.userId());
-        assertEquals(EMAIL.address(), identity.verifiedEmail().address());
+        VerifiedExternalIdentity google = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", "123456789012345678901"), EMAIL);
+        fails(UNAUTHORIZED, () -> service.registerVerifiedIdentity(google, DETAILS, PHOTO));
+        assertTrue(store.findByKey(google.key()).isEmpty());
+        assertEquals(0, generatedIds.get());
     }
 
     @Test
@@ -122,9 +119,9 @@ class UserServiceTest {
     void resolutionRejectsProviderSubstitutionWithoutChangingTheLink() {
         var identity = google("linked");
         User user = service.registerVerifiedIdentity(identity, DETAILS, PHOTO);
-        var substituted = new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL,
+        var substituted = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
                 identity.key(), EMAIL);
-        fails(IDENTITY_CONFLICT, () -> service.resolveVerifiedIdentity(substituted));
+        fails(UNAUTHORIZED, () -> service.resolveVerifiedIdentity(substituted));
         assertEquals(Optional.of(user.userId()), service.resolveVerifiedIdentity(identity));
         assertEquals(1, generatedIds.get());
     }
@@ -186,8 +183,8 @@ class UserServiceTest {
     void sameIssuerAndSubjectCannotBeReusedUnderAnotherProvider() {
         var original = google("google-1");
         service.registerVerifiedIdentity(original, DETAILS, PHOTO);
-        var conflict = new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, original.key(), EMAIL);
-        fails(IDENTITY_CONFLICT, () -> service.registerVerifiedIdentity(conflict, DETAILS, PHOTO));
+        var conflict = new VerifiedExternalIdentity(IdentityProvider.GOOGLE, original.key(), EMAIL);
+        fails(UNAUTHORIZED, () -> service.registerVerifiedIdentity(conflict, DETAILS, PHOTO));
         assertEquals(1, generatedIds.get());
     }
 
@@ -252,7 +249,7 @@ class UserServiceTest {
     @Test
     void linkingAnotherVerifiedEmailPreservesProfileAddressAndVerificationState() {
         User user = create();
-        var external = new VerifiedExternalIdentity(IdentityProvider.GOOGLE, google("google-1").key(),
+        var external = new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, google("google-1").key(),
                 new Email("other@estudiantec.cr"));
         grant(user, external);
         service.linkExternalIdentity(principal(user), user.userId(), external);
@@ -367,6 +364,9 @@ class UserServiceTest {
     private ExternalIdentityRepository failingAfterIdentityInsert() {
         return new ExternalIdentityRepository() {
             public Optional<ExternalIdentity> findByKey(ExternalIdentityKey key) { return store.findByKey(key); }
+            public void replaceStatus(ExternalIdentity expected, IdentityLinkStatus status) {
+                store.replaceStatus(expected, status);
+            }
             public ExternalIdentity insertOrGet(ExternalIdentity identity) {
                 store.insertOrGet(identity);
                 throw new IllegalStateException("Simulated adapter failure");

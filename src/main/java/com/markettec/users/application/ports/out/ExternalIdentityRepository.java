@@ -2,6 +2,7 @@ package com.markettec.users.application.ports.out;
 
 import com.markettec.users.domain.model.ExternalIdentity;
 import com.markettec.users.domain.model.ExternalIdentityKey;
+import com.markettec.users.domain.model.IdentityLinkStatus;
 import java.util.Optional;
 
 public interface ExternalIdentityRepository {
@@ -13,4 +14,7 @@ public interface ExternalIdentityRepository {
      * Requires an existing active owner; never reassigns or silently overwrites evidence.
      */
     ExternalIdentity insertOrGet(ExternalIdentity identity);
+
+    /** Atomic status transition; ownership and evidence remain immutable. */
+    void replaceStatus(ExternalIdentity expected, IdentityLinkStatus status);
 }

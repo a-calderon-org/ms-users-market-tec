@@ -1,5 +1,5 @@
 {
-  "normal_count": 204,
+  "normal_count": 223,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -20,6 +20,10 @@
     "failedAggregateUpdateRestoresProfileStatusAndVersion",
     "failedRecentPersistenceRollsBackSensitiveUnit",
     "flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum",
+    "googleLoginIntentIsAtomicAcrossConcurrentSqlExchangesAndRollback",
+    "googleLoginRequiresActivePersistedLinkAndAccount",
+    "googleRegistrationIsAtomicAndUniqueUnderConcurrentSqlRequests",
+    "googleRegistrationLinkFailureRollsBackUserProfileAndIntentOnSqlServer",
     "identityKeysAreExactCaseSensitiveAndHaveNoLengthTruncation",
     "linkingAndDeactivationSerializeAcrossConnections",
     "missingIdsAndIdentitiesReturnEmpty",
@@ -172,6 +176,29 @@
       "futureMissingAndWrongEvidenceReject",
       "mutationFailureRollsBackConsumption",
       "sessionRejectionAndMissingVerifierFailClosed"
+    ],
+    "com.markettec.users.application.session.GoogleLoginServiceTest": [
+      "blockedAccountCannotCreateSession",
+      "concurrentExchangeHasOneWinner",
+      "inactiveLinksCannotCreateSession",
+      "linkedGoogleIdentityCreatesOneSessionAndInternalIdentity",
+      "persistenceFailureRollsBackConsumptionAndSession",
+      "providerConflictCannotCreateSession",
+      "unlinkedIdentityAndSameEmailAccountCannotLoginOrMerge",
+      "wrongContextNonceExpiryAndInvalidTokenNeverCreateSession"
+    ],
+    "com.markettec.users.application.session.GoogleRegistrationServiceTest": [
+      "newRegistrationCreatesIsolatedBasicAccountAndOneActiveLink",
+      "invalidTokenNonceBrowserAndExpiryRejectWithoutAccount",
+      "loginIntentCannotRegister",
+      "allHistoricalLinkStatesRejectWithoutMutation",
+      "sameEmailNeverTransfersExistingAccount",
+      "linkFailureRollsBackAccountAndAttempt",
+      "sessionFailureAfterCommitDoesNotPermitDuplicateRegistration",
+      "concurrentRegistrationOfSameIdentityHasOneWinner",
+      "accountInsertFailureRollsBackIntent",
+      "reusedNonceFromAnotherAttemptIsRejected",
+      "simultaneousConsumptionOfOneAttemptHasOneWinner"
     ]
   }
 }
