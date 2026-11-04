@@ -421,6 +421,99 @@ class SessionAuthorityTest {
         assertThrows(SessionRejectedException.class, () -> old.recoverCsrf(next.refreshToken()));
     }
 
+    @Test void bootstrapReturnsCurrentCsrfAndPersistedRenewalWithoutMutation() {
+        create();
+        var authority = authority(allow);
+        var issued = authority.issue(authority.createAuthenticated(evidence), a -> "jwt");
+        Session before = sessions.loadLocked(issued.sessionId()).orElseThrow();
+        var result = authority.bootstrap(issued.refreshToken());
+        assertEquals(before, result.session());
+        assertEquals(before.userId(), result.user().userId());
+        assertEquals(issued.csrfToken(), result.csrfToken());
+        assertEquals(start, result.serverTime());
+        assertEquals(before, sessions.loadLocked(issued.sessionId()).orElseThrow());
+        assertEquals(before.requireRenewedAt(), result.session().requireRenewedAt());
+        clock.set(start.plusSeconds(60));
+        Session renewed = authority.renew(issued.sessionId());
+        var later = authority.bootstrap(issued.refreshToken());
+        assertEquals(start.plusSeconds(60), later.session().requireRenewedAt());
+        assertEquals(renewed, later.session());
+        assertEquals(renewed, sessions.loadLocked(issued.sessionId()).orElseThrow());
+    }
+
+    @Test void bootstrapRejectsConsumedUnknownExpiredAndRevokedCredentials() {
+        create();
+        var authority = authority(allow);
+        var issued = authority.issue(authority.createAuthenticated(evidence), a -> "jwt");
+        assertThrows(SessionRejectedException.class, () -> authority.bootstrap("0".repeat(64)));
+        var rotated = authority.refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt");
+        assertThrows(SessionRejectedException.class, () -> authority.bootstrap(issued.refreshToken()));
+        assertEquals(rotated.csrfToken(), authority.bootstrap(rotated.refreshToken()).csrfToken());
+        authority.revoke(rotated.sessionId());
+        assertThrows(SessionRejectedException.class, () -> authority.bootstrap(rotated.refreshToken()));
+        var next = authority.issue(authority.createAuthenticated(evidence), a -> "jwt");
+        clock.set(start.plusSeconds(1800));
+        assertThrows(SessionRejectedException.class, () -> authority.bootstrap(next.refreshToken()));
+    }
+
+    @Test void bootstrapRejectsInactiveAccount() {
+        create();
+        var issued = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
+        var inactive = users.findById(sessions.loadLocked(issued.sessionId()).orElseThrow().userId())
+                .orElseThrow().deactivate();
+        var blockedUsers = org.mockito.Mockito.mock(
+                com.markettec.users.application.ports.out.UserRepository.class);
+        org.mockito.Mockito.when(blockedUsers.findById(inactive.userId())).thenReturn(Optional.of(inactive));
+        UserTransactions readOnly = new UserTransactions() {
+            public <T> T execute(java.util.function.Supplier<T> work) {
+                synchronized (sessions) { return work.get(); }
+            }
+        };
+        var blocked = new SessionAuthority(sessions, users, blockedUsers, readOnly,
+                clock, new SecureRandom(), allow, testKeys());
+        assertThrows(UserDomainException.class, () -> blocked.bootstrap(issued.refreshToken()));
+    }
+
+    @Test void bootstrapSerializesWithRefreshAndRevocation() throws Exception {
+        create();
+        var authority = authority(allow);
+        var issued = authority.issue(authority.createAuthenticated(evidence), a -> "jwt");
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch startLine = new CountDownLatch(1);
+        try {
+            Future<Optional<SessionAuthority.SessionBootstrap>> reader = pool.submit(() -> {
+                startLine.await();
+                try { return Optional.of(authority.bootstrap(issued.refreshToken())); }
+                catch (SessionRejectedException rejected) { return Optional.empty(); }
+            });
+            Future<SessionTokens> writer = pool.submit(() -> {
+                startLine.await();
+                return authority.refresh(issued.refreshToken(), issued.csrfToken(), a -> "next-jwt");
+            });
+            startLine.countDown();
+            var observed = reader.get(5, TimeUnit.SECONDS);
+            var rotated = writer.get(5, TimeUnit.SECONDS);
+            observed.ifPresent(snapshot -> assertEquals(issued.csrfToken(), snapshot.csrfToken()));
+            assertThrows(SessionRejectedException.class, () -> authority.bootstrap(issued.refreshToken()));
+            assertEquals(rotated.csrfToken(), authority.bootstrap(rotated.refreshToken()).csrfToken());
+            authority.revoke(rotated.sessionId());
+            assertThrows(SessionRejectedException.class, () -> authority.bootstrap(rotated.refreshToken()));
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test void bootstrapRejectsHistoricalUnknownRenewal() {
+        create();
+        var authority = authority(allow);
+        var issued = authority.issue(authority.createAuthenticated(evidence), a -> "jwt");
+        Session current = sessions.loadLocked(issued.sessionId()).orElseThrow();
+        Session historical = new Session(current.sessionId(), current.userId(), current.createdAt(), null,
+                current.renewableUntil(), current.lastActivityAt(), current.idleUntil(),
+                current.absoluteUntil(), false, current.version());
+        sessions.data.put(current.sessionId(), historical);
+        assertThrows(SessionRejectedException.class, () -> authority.bootstrap(issued.refreshToken()));
+        assertEquals(historical, sessions.loadLocked(issued.sessionId()).orElseThrow());
+    }
+
     private static final class MemorySessions implements SessionRepository {
         private final Map<String, Session> data = new HashMap<>();
         private final Map<String, SessionVerifiers> credentials = new HashMap<>();

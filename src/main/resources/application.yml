@@ -22,6 +22,12 @@ users:
     audience: ${USERS_INTERNAL_JWT_AUDIENCE:}
     active-kid: ${USERS_INTERNAL_JWT_ACTIVE_KID:}
     keys-json: ${USERS_INTERNAL_JWT_KEYS_JSON:}
+  session:
+    http:
+      enabled: ${USERS_SESSION_HTTP_ENABLED:false}
+      allowed-origins: ${USERS_SESSION_HTTP_ALLOWED_ORIGINS:}
+      public-api-origin: ${USERS_SESSION_HTTP_PUBLIC_API_ORIGIN:}
+      https-topology-verified: ${USERS_SESSION_HTTP_HTTPS_TOPOLOGY_VERIFIED:false}
   google:
     enabled: ${USERS_GOOGLE_VERIFIER_ENABLED:false}
     login-enabled: ${USERS_GOOGLE_LOGIN_ENABLED:false}

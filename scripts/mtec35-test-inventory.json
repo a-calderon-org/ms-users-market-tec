@@ -1,5 +1,5 @@
 {
-  "normal_count": 248,
+  "normal_count": 258,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -148,7 +148,12 @@
       "simultaneousRevocationsAreIdempotent",
       "authenticatedIssuanceContextRequiresVerifiedLinkedIdentity",
       "verifiedLoginCanMintIssuanceContextWithoutHttpIds",
-      "technicalRefreshRotatesCredentialsWithoutRenewalOrActivity"
+      "technicalRefreshRotatesCredentialsWithoutRenewalOrActivity",
+      "bootstrapReturnsCurrentCsrfAndPersistedRenewalWithoutMutation",
+      "bootstrapRejectsConsumedUnknownExpiredAndRevokedCredentials",
+      "bootstrapRejectsHistoricalUnknownRenewal",
+      "bootstrapSerializesWithRefreshAndRevocation",
+      "bootstrapRejectsInactiveAccount"
     ],
     "com.markettec.users.adapters.out.jwt.InternalJwtServiceTest": [
       "issuesValidRs256TokenFromTrustedActiveSession",
@@ -220,6 +225,13 @@
     "com.markettec.users.adapters.in.web.GoogleHttpDisabledTest": [
       "defaultApplicationDoesNotExposeGoogleAuthRoutes",
       "defaultApplicationDoesNotExposeB3AuthRoutes"
+    ],
+    "com.markettec.users.adapters.in.web.SessionBootstrapControllerTest": [
+      "validCookieReturnsCompleteContractAndNoIssuedCredentials",
+      "invalidOriginClientOrCookieNeverReachesAuthority",
+      "unknownAndConsumedRefreshHaveSamePrivateError",
+      "preflightAllowsOnlyGetAndAllowedHeaders",
+      "configurationFailsClosed"
     ]
   }
 }

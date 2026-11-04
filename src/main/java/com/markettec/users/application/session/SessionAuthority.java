@@ -197,6 +197,29 @@ public final class SessionAuthority {
         });
     }
 
+    /** One locked, read-only credential and account snapshot for the cookie-only HTTP bootstrap. */
+    public SessionBootstrap bootstrap(String refresh) {
+        if (!validSecret(refresh)) throw new SessionRejectedException();
+        return transactions.execute(() -> {
+            String refreshHash = hash(refresh);
+            Session session = sessions.loadByRefreshHashLocked(refreshHash).orElseThrow(SessionRejectedException::new);
+            Instant observedAt = now();
+            if (!session.validAt(observedAt)) throw new SessionRejectedException();
+            SessionVerifiers values = sessions.verifiers(session.sessionId()).orElseThrow(SessionRejectedException::new);
+            if (!equal(values.refreshHash(), refreshHash)) throw new SessionRejectedException();
+            String csrf = csrfKeys.derive(values.keyId(), session.sessionId(), values.generation(), refreshHash);
+            if (!equal(values.csrfHash(), hash(csrf))) throw new SessionRejectedException();
+            session.requireRenewedAt();
+            User user = users.findById(session.userId()).orElseThrow(SessionRejectedException::new);
+            user.requireActive();
+            return new SessionBootstrap(session, user, csrf, observedAt);
+        });
+    }
+
+    public record SessionBootstrap(Session session, User user, String csrfToken, Instant serverTime) {
+        @Override public String toString() { return "SessionBootstrap[credentials=REDACTED]"; }
+    }
+
     /** Synchronizer proof is bound to a live session and constant-time compared. */
     public void requireCsrf(String sessionId, UserId userId, String csrf) {
         if (sessionId == null || !sessionId.matches("[0-9a-f]{32}") || userId == null || !validSecret(csrf))
