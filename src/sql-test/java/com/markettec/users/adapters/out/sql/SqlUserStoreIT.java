@@ -23,11 +23,17 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 
 import javax.sql.DataSource;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
+import java.util.Properties;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -792,6 +798,159 @@ class SqlUserStoreIT {
             assertThrows(SessionRejectedException.class,
                     () -> authority.get().refresh(winner.refreshToken(), winner.csrfToken(), x -> "jwt"));
         } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void independentJvmRefreshRotationReplayRollbackAndRevocation() throws Exception {
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        seedGoogle(proof, now);
+        var permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
+        var issued = authority.issue(authority.createAuthenticated(proof), a -> "synthetic-jwt");
+        var before = authority.current(issued.sessionId()).orElseThrow();
+        assertEquals(Session.WINDOW, java.time.Duration.between(before.renewedAt(), before.renewableUntil()));
+        assertEquals(Session.IDLE, java.time.Duration.between(before.lastActivityAt(), before.idleUntil()));
+        assertEquals(Session.ABSOLUTE, java.time.Duration.between(before.createdAt(), before.absoluteUntil()));
+
+        // A: Both child JVMs connect before the parent releases either attempt.
+        try (var first = worker("refresh", issued); var second = worker("refresh", issued)) {
+            assertNotEquals(first.pid(), second.pid());
+            first.release(); second.release();
+            String a = first.result(); String b = second.result();
+            assertEquals(1, (a.startsWith("ROTATED ") ? 1 : 0) + (b.startsWith("ROTATED ") ? 1 : 0));
+            assertTrue(a.equals("REJECTED ATTEMPT_CONSUMED") || b.equals("REJECTED ATTEMPT_CONSUMED"));
+            String[] winner = (a.startsWith("ROTATED ") ? a : b).split(" ");
+            assertEquals(3, winner.length);
+            assertEquals(1L, jdbc.queryForObject("SELECT current_credential_generation FROM dbo.sessions WHERE session_id=?",
+                    Long.class, issued.sessionId()));
+            assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.session_credential_generations WHERE session_id=?",
+                    Integer.class, issued.sessionId()));
+            assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.session_credential_generations WHERE session_id=? AND consumed_ms IS NULL",
+                    Integer.class, issued.sessionId()));
+            assertEquals(before, authority.current(issued.sessionId()).orElseThrow());
+            assertEquals(winner[2], authority.recoverCsrf(winner[1]));
+
+            // B: A consumed pair cannot mint again or revoke the winning session.
+            try (var replay = worker("refresh", issued)) {
+                replay.release();
+                assertEquals("REJECTED ATTEMPT_CONSUMED", replay.result());
+            }
+            assertEquals(before, authority.current(issued.sessionId()).orElseThrow());
+            assertEquals(winner[2], authority.recoverCsrf(winner[1]));
+            try (var invalidCsrf = worker("refresh", issued.refreshToken(), winner[2], issued.sessionId());
+                 var unknown = worker("refresh", "0".repeat(64), issued.csrfToken(), issued.sessionId())) {
+                invalidCsrf.release(); unknown.release();
+                assertEquals("REJECTED PROOF_INVALID", invalidCsrf.result());
+                assertEquals("REJECTED PROOF_INVALID", unknown.result());
+            }
+        }
+
+        // C: A signer failure after SQL rotation must roll back both generation rows and pointers.
+        var rollbackProof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        seedGoogle(rollbackProof, now);
+        var rollbackPair = authority.issue(authority.createAuthenticated(rollbackProof), a -> "synthetic-jwt");
+        try (var failed = worker("fail-sign", rollbackPair)) {
+            failed.release(); assertEquals("SIGNER_FAILED", failed.result());
+        }
+        assertEquals(0L, jdbc.queryForObject("SELECT current_credential_generation FROM dbo.sessions WHERE session_id=?",
+                Long.class, rollbackPair.sessionId()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.session_credential_generations WHERE session_id=? AND consumed_ms IS NULL",
+                Integer.class, rollbackPair.sessionId()));
+        try (var retry = worker("refresh", rollbackPair)) {
+            retry.release(); assertTrue(retry.result().startsWith("ROTATED "));
+        }
+
+        // D: Revocation and rotation use the same session lock and must yield a closed session.
+        var revokeProof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        seedGoogle(revokeProof, now);
+        var revokePair = authority.issue(authority.createAuthenticated(revokeProof), a -> "synthetic-jwt");
+        try (var refresh = worker("refresh", revokePair); var revoke = worker("revoke", revokePair)) {
+            refresh.release(); revoke.release();
+            String rotated = refresh.result();
+            assertTrue(rotated.startsWith("ROTATED ") || rotated.equals("REJECTED PROOF_INVALID"));
+            assertEquals("REVOKED", revoke.result());
+            assertTrue(authority.current(revokePair.sessionId()).isEmpty());
+            assertNull(jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
+                    String.class, revokePair.sessionId()));
+            if (rotated.startsWith("ROTATED ")) {
+                String[] result = rotated.split(" ");
+                assertThrows(SessionRejectedException.class, () -> authority.recoverCsrf(result[1]));
+            }
+        }
+    }
+
+    private RefreshChild worker(String operation, SessionTokens tokens) throws Exception {
+        return worker(operation, tokens.refreshToken(), tokens.csrfToken(), tokens.sessionId());
+    }
+
+    private RefreshChild worker(String operation, String refresh, String csrf, String sessionId) throws Exception {
+        var config = server.workerConnection();
+        config.setProperty("csrfKey", TEST_KEY);
+        config.setProperty("operation", operation);
+        config.setProperty("refresh", refresh);
+        config.setProperty("csrf", csrf);
+        config.setProperty("sessionId", sessionId);
+        return new RefreshChild(config);
+    }
+
+    private static final class RefreshChild implements AutoCloseable {
+        private final Process process;
+        private final BufferedReader output;
+        private final OutputStreamWriter input;
+        private final long pid;
+
+        RefreshChild(Properties config) throws Exception {
+            String javaBinary = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString();
+            process = new ProcessBuilder(javaBinary, "-cp", System.getProperty("java.class.path"), RefreshWorker.class.getName())
+                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            output = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+            input = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
+            var bytes = new ByteArrayOutputStream();
+            config.store(bytes, "synthetic isolated SQL QA");
+            input.write(Base64.getEncoder().encodeToString(bytes.toByteArray()) + "\n");
+            input.flush();
+            String ready = readProtocol("READY ", 30);
+            assertNotNull(ready, "Child JVM exited before SQL connection was ready");
+            assertTrue(ready.matches("READY [0-9]+"), "Child JVM did not announce readiness");
+            pid = Long.parseLong(ready.substring(6));
+            assertNotEquals(ProcessHandle.current().pid(), pid);
+        }
+
+        long pid() { return pid; }
+        void release() throws Exception { input.write("GO\n"); input.flush(); }
+        String result() throws Exception {
+            String line = readProtocol("RESULT ", 40);
+            assertNotNull(line, "Child JVM exited without a result");
+            assertTrue(line.startsWith("RESULT "), "Child JVM returned an unexpected response");
+            assertTrue(process.waitFor(10, TimeUnit.SECONDS), "Child JVM did not exit");
+            assertEquals(0, process.exitValue(), "Child JVM failed");
+            return line.substring(7);
+        }
+
+        private String readProtocol(String prefix, int seconds) throws Exception {
+            return CompletableFuture.supplyAsync(() -> {
+                try {
+                    String line;
+                    while ((line = output.readLine()) != null) {
+                        if (line.startsWith(prefix)) return line;
+                    }
+                    return null;
+                } catch (Exception e) { throw new CompletionException(e); }
+            }).get(seconds, TimeUnit.SECONDS);
+        }
+
+        @Override public void close() throws Exception {
+            input.close(); output.close();
+            if (process.isAlive()) { process.destroyForcibly(); process.waitFor(10, TimeUnit.SECONDS); }
+        }
     }
 
     @Test

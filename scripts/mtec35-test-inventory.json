@@ -31,6 +31,7 @@
     "missingIdsAndIdentitiesReturnEmpty",
     "nestedUnitRollsBackToSavepointWithoutLosingOuterWrites",
     "opaqueRefreshRotatesOnceAcrossConcurrentSqlTransactionsAndRevocation",
+    "independentJvmRefreshRotationReplayRollbackAndRevocation",
     "pendingGoogleRegistrationConfirmsOnceOnRealSqlWithTwoRepositoryInstances",
     "pendingRegistrationJwtFailureRollsBackRealSqlWrites",
     "persistsAndFindsEveryUserAndProfileFieldLosslessly",
