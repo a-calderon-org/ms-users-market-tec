@@ -55,6 +55,28 @@ class SessionAuthorityTest {
         assertEquals(0, sessions.loadLocked(s.sessionId()).orElseThrow().version());
     }
 
+    @Test void authenticatedIssuanceContextRequiresVerifiedLinkedIdentity() {
+        Session s = create();
+        AuthenticatedSession context = authority(allow).authenticate(evidence, s.sessionId());
+        assertEquals(s.sessionId(), context.sessionId());
+        VerifiedExternalIdentity stranger = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", "stranger"), evidence.email());
+        assertThrows(SessionRejectedException.class,
+                () -> authority(allow).authenticate(stranger, s.sessionId()));
+        assertThrows(SessionRejectedException.class,
+                () -> authority(allow).authenticate(evidence, "00000000000000000000000000000000"));
+        authority(allow).revoke(s.sessionId());
+        assertThrows(SessionRejectedException.class,
+                () -> authority(allow).authenticate(evidence, s.sessionId()));
+    }
+
+    @Test void verifiedLoginCanMintIssuanceContextWithoutHttpIds() {
+        Session s = create();
+        AuthenticatedSession context = authority(allow).createAuthenticated(evidence);
+        assertNotEquals(s.sessionId(), context.sessionId());
+        assertTrue(authority(allow).current(context.sessionId()).isPresent());
+    }
+
     @Test void missingOrUnlinkedEvidenceFailsClosed() {
         assertThrows(SessionRejectedException.class, () -> authority(allow).create(evidence));
         assertTrue(authority(allow).current("00000000000000000000000000000000").isEmpty());

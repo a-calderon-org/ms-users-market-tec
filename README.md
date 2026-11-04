@@ -601,6 +601,46 @@ las 111 pruebas previas; junto con las 26 de MTEC-37, el inventario normal pasa 
 La suite normal no certifica SQL Server real ni APIM, Google o Azure.
 No se modifican persistencia ni migraciones.
 
+### Fase 1B — JWT internos y JWKS
+
+El componente interno `InternalJwtService` emite RS256 con RSA de al menos 2048 bits
+solo desde `AuthenticatedSession`, una capacidad que `SessionAuthority` crea tras
+evidencia de identidad verificada. Antes de firmar vuelve a consultar la sesión
+autoritaria y exige vigencia. `exp` es el mínimo entre 240 segundos y los tres
+deadlines de sesión, sin renovación implícita. La validación criptográfica comprueba
+firma, `kid`, issuer, audiencia, identidad opaca y tiempos sin tolerancia positiva;
+la comprobación de revocación vigente sigue siendo una responsabilidad separada.
+
+En perfiles SQL, habilitar con `USERS_INTERNAL_JWT_ENABLED=true` y suministrar
+`USERS_INTERNAL_JWT_ISSUER`, `USERS_INTERNAL_JWT_AUDIENCE`,
+`USERS_INTERNAL_JWT_ACTIVE_KID` y `USERS_INTERNAL_JWT_KEYS_JSON` desde configuración
+externa protegida. El JSON es un array de objetos con `kid` y `publicKeyPem`
+(X.509 PEM); solo el `kid` activo lleva `privateKeyPem` (PKCS#8 PEM). Durante
+rotación se conserva la clave pública anterior en el array hasta que expiren
+sus tokens, mientras la nueva clave activa firma. Se rechazan claves débiles,
+duplicadas, incompletas o que no formen un par. `InternalJwtKeyRing.publicJwksJson()`
+entrega solo claves públicas; la ruta HTTP queda pendiente del contrato Draft.
+La contención distribuida por compromiso de clave depende de APIM y los demás
+validadores.
+
+### Fase 1C — controles D4/D5 internos
+
+`ProtectedUserOperations` es la frontera programática para consultar o cambiar el
+perfil propio, dar de baja la cuenta y vincular una identidad. Verifica el JWT
+interno y concede únicamente la operación propia enumerada; no acepta identidad,
+sesión ni permisos de encabezados o cuerpo como prueba de autorización. La lectura
+comprueba de nuevo `exp` antes de devolver el resultado. Las escrituras exigen
+sesión vigente en SQL Server y mantienen el bloqueo de su fila durante el cambio
+de cuenta y el commit; una sesión revocada, expirada o inaccesible impide ese cambio.
+Estas comprobaciones no renuevan la sesión. La autorización adicional de vínculo
+continúa cerrada por defecto.
+
+Todavía no hay rutas HTTP protegidas a las que conectar esta frontera. Las rutas
+públicas y de salud siguen anónimas. Tampoco se garantiza la entrega de respuestas
+en streaming tras `exp`, ni la coordinación atómica de commits en otros servicios:
+requieren integración y pruebas en esos límites. D4/D5 son parciales dentro de
+`ms-users`, no controles completos de extremo a extremo.
+
 ### Fases posteriores — Proposed, no iniciadas
 
 La arquitectura base ADR-004, B01 D1–D3, B02/B03 y B05/B06 tienen aprobación
