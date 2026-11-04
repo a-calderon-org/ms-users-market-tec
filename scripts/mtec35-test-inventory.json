@@ -32,6 +32,7 @@
     "nestedUnitRollsBackToSavepointWithoutLosingOuterWrites",
     "opaqueRefreshRotatesOnceAcrossConcurrentSqlTransactionsAndRevocation",
     "independentJvmRefreshRotationReplayRollbackAndRevocation",
+    "independentHttpsListenersShareOneSqlRefreshGeneration",
     "pendingGoogleRegistrationConfirmsOnceOnRealSqlWithTwoRepositoryInstances",
     "pendingRegistrationJwtFailureRollsBackRealSqlWrites",
     "persistsAndFindsEveryUserAndProfileFieldLosslessly",
