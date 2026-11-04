@@ -1,5 +1,5 @@
 {
-  "normal_count": 283,
+  "normal_count": 285,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -159,6 +159,7 @@
       "bootstrapSerializesWithRefreshAndRevocation",
       "bootstrapRejectsInactiveAccount",
       "httpRefreshReturnsCoherentSnapshotWithoutChangingSessionState",
+      "refreshAuditEmitsCommittedRotationButNoFalseSuccessAfterSignerFailure",
       "httpRefreshRollsBackOnSigningFailureAndRejectsInactiveAccount",
       "logoutIsIdempotentOnlyForExactLastProofAndDoesNotAffectOtherSessions",
       "expiredCurrentProofAllowsCleanupWithoutMutation",
@@ -259,6 +260,7 @@
       "validRotateReturnsAuthResponseAndOnlyCookieCarriesRefresh",
       "invalidShapeOriginCookieAndCsrfNeverRotate",
       "unknownOrConsumedRefreshIssuesNoCredential",
+      "malformedCsrfHasUniformErrorAndCorrelatedSecretFreeAudit",
       "preflightRequiresExactOriginPostAndAllowedHeaders"
     ],
     "com.markettec.users.adapters.in.web.SessionLogoutControllerTest": [

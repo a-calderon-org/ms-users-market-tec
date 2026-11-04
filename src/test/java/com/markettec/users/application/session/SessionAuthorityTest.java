@@ -5,6 +5,7 @@ import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.jwt.InternalJwtService;
 import com.markettec.users.adapters.in.web.SessionBootstrapController;
 import com.markettec.users.adapters.in.web.SessionRefreshController;
+import com.markettec.users.config.SafeJsonLogFormatter;
 import com.markettec.users.application.ports.in.VerifiedExternalIdentity;
 import com.markettec.users.application.ports.out.UserTransactions;
 import com.markettec.users.domain.model.*;
@@ -339,6 +340,30 @@ class SessionAuthorityTest {
         assertEquals(0L, sessions.generation.get(first.sessionId()));
         sessions.failAfterConsumption = false;
         authority(allow).refresh(first.refreshToken(), first.csrfToken(), a -> "jwt");
+    }
+
+    @Test void refreshAuditEmitsCommittedRotationButNoFalseSuccessAfterSignerFailure() {
+        create();
+        var authority = authority(allow);
+        var first = authority.issue(authority.createAuthenticated(evidence), a -> "jwt");
+        var logger = (Logger) LoggerFactory.getLogger(SessionAuthority.class);
+        var events = new ListAppender<ILoggingEvent>();
+        events.start();
+        logger.addAppender(events);
+        try {
+            assertThrows(IllegalStateException.class, () -> authority.refresh(first.refreshToken(), first.csrfToken(),
+                    a -> { throw new IllegalStateException("signing failed"); }));
+            assertTrue(events.list.isEmpty());
+            var next = authority.refresh(first.refreshToken(), first.csrfToken(), a -> "jwt-next");
+            assertEquals(1, events.list.size());
+            String audit = new SafeJsonLogFormatter().format(events.list.getFirst());
+            assertTrue(audit.contains("\"outcome\":\"rotated\""));
+            assertFalse(audit.contains(first.refreshToken()));
+            assertFalse(audit.contains(first.csrfToken()));
+            assertFalse(audit.contains(next.refreshToken()));
+            assertFalse(audit.contains(next.csrfToken()));
+            assertFalse(audit.contains("jwt-next"));
+        } finally { logger.detachAppender(events); events.stop(); }
     }
 
     @Test void httpRefreshReturnsCoherentSnapshotWithoutChangingSessionState() {
@@ -708,9 +733,15 @@ class SessionAuthorityTest {
                     .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
                     .andExpect(header().doesNotExist("Set-Cookie"));
             assertEquals(1, events.list.size());
-            assertEquals("Consumed refresh generation reused", events.list.getFirst().getFormattedMessage());
-            assertFalse(events.list.getFirst().getFormattedMessage().contains(issued.refreshToken()));
-            assertFalse(events.list.getFirst().getFormattedMessage().contains(issued.csrfToken()));
+            var formatter = new SafeJsonLogFormatter();
+            String replayEvent = formatter.format(events.list.getFirst());
+            assertTrue(replayEvent.contains("\"outcome\":\"consumed_confirmed\""));
+            assertTrue(replayEvent.contains("\"policyVersion\":\"C-1\""));
+            assertTrue(replayEvent.contains("\"sessionRef\":"));
+            assertFalse(replayEvent.contains(issued.sessionId()));
+            assertFalse(replayEvent.contains(issued.refreshToken()));
+            assertFalse(replayEvent.contains(issued.csrfToken()));
+            assertFalse(replayEvent.contains(issued.userId()));
             mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
                             .header("X-MTEC-Client", "web").header("X-CSRF-Token", "f".repeat(64))
                             .cookie(new Cookie("__Host-mtec-refresh", issued.refreshToken()))
@@ -718,7 +749,8 @@ class SessionAuthorityTest {
                     .andExpect(status().isUnauthorized())
                     .andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
                     .andExpect(header().doesNotExist("Set-Cookie"));
-            assertEquals(1, events.list.size());
+            assertEquals(2, events.list.size());
+            assertTrue(formatter.format(events.list.get(1)).contains("\"outcome\":\"proof_invalid\""));
             mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
                             .header("X-MTEC-Client", "web").header("X-CSRF-Token", issued.csrfToken())
                             .cookie(new Cookie("__Host-mtec-refresh", "0".repeat(64)))
@@ -726,12 +758,13 @@ class SessionAuthorityTest {
                     .andExpect(status().isUnauthorized())
                     .andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
                     .andExpect(header().doesNotExist("Set-Cookie"));
-            assertEquals(1, events.list.size());
+            assertEquals(3, events.list.size());
+            assertTrue(formatter.format(events.list.get(2)).contains("\"outcome\":\"proof_invalid\""));
             mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
                             .header("X-MTEC-Client", "web")
                             .cookie(new Cookie("__Host-mtec-refresh", issued.refreshToken()))
                             .contentType("application/json").content("{\"mode\":\"rotate\"}"))
-                    .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("CSRF_INVALID"));
+                    .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"));
             assertEquals(1L, sessions.generation.get(issued.sessionId()));
             assertEquals(state, sessions.loadLocked(issued.sessionId()).orElseThrow());
             assertFalse(state.revoked());
@@ -754,6 +787,7 @@ class SessionAuthorityTest {
                             .cookie(new Cookie("__Host-mtec-refresh", nextRefresh))
                             .contentType("application/json").content("{\"mode\":\"rotate\"}"))
                     .andExpect(status().isUnauthorized()).andExpect(header().doesNotExist("Set-Cookie"));
+            assertTrue(formatter.format(events.list.getLast()).contains("\"outcome\":\"session_closed\""));
             verify(jwt, times(1)).issue(any());
         } finally { logger.detachAppender(events); events.stop(); }
     }

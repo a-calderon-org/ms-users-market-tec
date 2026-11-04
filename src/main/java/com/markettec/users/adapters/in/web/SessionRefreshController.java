@@ -30,12 +30,15 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Opt-in B3 refresh adapter; its transaction and credentials are independent of Google B1. */
 @RestController
 @Profile("sql-dev | sql-appservice | sql-integration")
 @ConditionalOnProperty(prefix = "users.session.refresh", name = "enabled", havingValue = "true")
 public final class SessionRefreshController {
+    private static final Logger AUDIT = LoggerFactory.getLogger(SessionRefreshController.class);
     private static final String REFRESH = "__Host-mtec-refresh";
     private final SessionAuthority authority;
     private final InternalJwtService jwt;
@@ -69,11 +72,16 @@ public final class SessionRefreshController {
                 || !body.path("mode").isTextual() || !"rotate".equals(body.path("mode").asText()))
             throw new RefreshHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
         String refresh = refreshCookie(request);
-        if (refresh == null) throw new RefreshHttpException(HttpStatus.UNAUTHORIZED, "REFRESH_INVALID");
+        if (refresh == null) {
+            auditInvalidProof();
+            throw new RefreshHttpException(HttpStatus.UNAUTHORIZED, "REFRESH_INVALID");
+        }
         Enumeration<String> csrfHeaders = request.getHeaders("X-CSRF-Token");
         String csrf = csrfHeaders.hasMoreElements() ? csrfHeaders.nextElement() : null;
-        if (csrf == null || !csrf.matches("[0-9a-f]{64}") || csrfHeaders.hasMoreElements())
-            throw new RefreshHttpException(HttpStatus.FORBIDDEN, "CSRF_INVALID");
+        if (csrf == null || !csrf.matches("[0-9a-f]{64}") || csrfHeaders.hasMoreElements()) {
+            auditInvalidProof();
+            throw new RefreshHttpException(HttpStatus.UNAUTHORIZED, "REFRESH_INVALID");
+        }
         var result = authority.refreshWithSnapshot(refresh, csrf, jwt);
         var tokens = result.tokens();
         var session = result.session();
@@ -159,6 +167,12 @@ public final class SessionRefreshController {
             value = cookie.getValue();
         }
         return value != null && value.matches("[0-9a-f]{64}") ? value : null;
+    }
+
+    private static void auditInvalidProof() {
+        AUDIT.atInfo().addKeyValue("eventType", "session_refresh")
+                .addKeyValue("outcome", "proof_invalid").addKeyValue("policyVersion", "C-1")
+                .log("refresh_audit");
     }
 
     private static HttpHeaders cors(String origin) {

@@ -156,18 +156,36 @@ public final class SessionAuthority {
      */
     public SessionTokens refresh(String refresh, String csrf, InternalTokenIssuer jwt) {
         Objects.requireNonNull(jwt);
-        if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
-        return transactions.execute(() -> rotateLocked(refresh, csrf, jwt, false).tokens());
+        requireRefreshProof(refresh, csrf);
+        Rotation rotation = transactions.execute(() -> rotateLocked(refresh, csrf, jwt, false));
+        auditRefresh("rotated", rotation.session().sessionId());
+        return rotation.tokens();
     }
 
     /** One transaction owns account validation, rotation, signing, and the response snapshot. */
     public RefreshedSession refreshWithSnapshot(String refresh, String csrf, InternalTokenIssuer jwt) {
         Objects.requireNonNull(jwt);
-        if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
-        return transactions.execute(() -> {
+        requireRefreshProof(refresh, csrf);
+        RefreshedSession result = transactions.execute(() -> {
             Rotation rotation = rotateLocked(refresh, csrf, jwt, true);
             return new RefreshedSession(rotation.tokens(), rotation.session(), rotation.user(), now());
         });
+        auditRefresh("rotated", result.session().sessionId());
+        return result;
+    }
+
+    private static void requireRefreshProof(String refresh, String csrf) {
+        if (!validSecret(refresh) || !validSecret(csrf)) {
+            auditRefresh("proof_invalid", null);
+            throw new SessionRejectedException();
+        }
+    }
+
+    private static void auditRefresh(String outcome, String sessionId) {
+        var event = LOG.atInfo().addKeyValue("eventType", "session_refresh")
+                .addKeyValue("outcome", outcome).addKeyValue("policyVersion", "C-1");
+        if (sessionId != null) event.addKeyValue("sessionRef", hash(sessionId).substring(0, 16));
+        event.log("refresh_audit");
     }
 
     /** Caller owns the transaction; a consumed proof and a live proof use the same lock path. */
@@ -177,16 +195,36 @@ public final class SessionAuthority {
         Session before = sessions.loadByRefreshHashLocked(refreshHash).orElse(null);
         if (before == null) {
             var consumed = sessions.consumedByRefreshHashLocked(refreshHash);
+            if (consumed.isPresent() && equal(consumed.get().verifiers().csrfHash(), csrfHash)
+                    && !consumed.get().session().validAt(now())) {
+                auditRefresh("session_closed", consumed.get().session().sessionId());
+                throw new SessionRejectedException();
+            }
             if (consumed.isPresent() && consumed.get().session().validAt(now())
                     && equal(consumed.get().verifiers().csrfHash(), csrfHash)) {
-                LOG.warn("Consumed refresh generation reused");
+                auditRefresh("consumed_confirmed", consumed.get().session().sessionId());
                 throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
             }
+            var closed = sessions.closedByRefreshHashLocked(refreshHash);
+            if (closed.isPresent() && !closed.get().session().validAt(now())
+                    && equal(closed.get().verifiers().csrfHash(), csrfHash)) {
+                auditRefresh("session_closed", closed.get().session().sessionId());
+                throw new SessionRejectedException();
+            }
+            auditRefresh("proof_invalid", null);
             throw new SessionRejectedException();
         }
         String id = before.sessionId();
-        if (!before.validAt(now())) throw new SessionRejectedException();
-        SessionVerifiers old = requireCredentials(id, refresh, csrf);
+        if (!before.validAt(now())) {
+            auditRefresh("session_closed", id);
+            throw new SessionRejectedException();
+        }
+        SessionVerifiers old;
+        try { old = requireCredentials(id, refresh, csrf); }
+        catch (SessionRejectedException invalid) {
+            auditRefresh("proof_invalid", null);
+            throw invalid;
+        }
         User user = null;
         if (withSnapshot) {
             user = users.findById(before.userId()).orElseThrow(SessionRejectedException::new);
