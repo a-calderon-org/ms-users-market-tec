@@ -1,5 +1,5 @@
 {
-  "normal_count": 160,
+  "normal_count": 169,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -32,10 +32,12 @@
     "retainsCommittedAccountAndIdentityAfterDatabaseEngineRestart",
     "rollsBackAllTablesAfterFailureFollowingAllWrites",
     "schemaValidationRejectsWrongDatabaseWithoutWriting",
+    "sessionCreationRenewalAndExpiryPersistOnRealSqlServer",
     "staleAggregateCannotOverwriteCommittedChanges",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",
-    "updatesOnlyTheProfileDetailsAndIncrementsVersion"
+    "updatesOnlyTheProfileDetailsAndIncrementsVersion",
+    "sessionRevocationAndRenewalSerializeOnRealSqlServer"
   ],
   "required_normal_methods": {
     "com.markettec.users.adapters.out.google.NimbusGoogleIdentityVerifierTest": [
@@ -110,6 +112,17 @@
       "concurrentHealthReadersShareOneJdbcValidation",
       "jdbcAndClosedPoolFailuresAreDownWithoutPrivateDetails",
       "rejectsNegativeCacheTtl"
+    ],
+    "com.markettec.users.application.session.SessionAuthorityTest": [
+      "createsOpaquePersistedSessionFromLinkedVerifiedIdentity",
+      "missingOrUnlinkedEvidenceFailsClosed",
+      "firstDeadlineExpiresWithoutLeewayOrImplicitRenewal",
+      "activityDoesNotRenewWindowAndWindowExpiresAtSixtyMinutes",
+      "explicitRenewalCannotExtendAbsoluteDeadline",
+      "revocationIsIdempotentAndNeverRevives",
+      "authorizationAndStoreFailureFailClosed",
+      "concurrentRevocationWinsOverSubsequentRenewalAndActivity",
+      "simultaneousRevocationsAreIdempotent"
     ]
   }
 }

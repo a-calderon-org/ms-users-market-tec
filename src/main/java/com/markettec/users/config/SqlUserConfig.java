@@ -4,6 +4,8 @@ import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.sql.AzureSqlConnection;
 import com.markettec.users.adapters.out.sql.SqlSchemaValidator;
 import com.markettec.users.adapters.out.sql.SqlUserStore;
+import com.markettec.users.adapters.out.sql.SqlSessionRepository;
+import com.markettec.users.application.session.*;
 import com.markettec.users.application.ports.in.UserUseCases;
 import com.markettec.users.application.ports.out.IdentityLinkAuthorization;
 import com.markettec.users.application.usecases.UserService;
@@ -22,6 +24,7 @@ import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import javax.sql.DataSource;
 import java.sql.SQLException;
 import java.time.Clock;
+import java.security.SecureRandom;
 
 @Configuration
 @Profile("sql-dev | sql-appservice | sql-integration")
@@ -74,5 +77,24 @@ public class SqlUserConfig {
     @Bean
     UserUseCases sqlUserUseCases(SqlUserStore store, IdentityLinkAuthorization authorization, Clock clock) {
         return new UserService(store, store, new UuidUserIdGenerator(), store, authorization, clock);
+    }
+
+    @Bean
+    SqlSessionRepository sqlSessionRepository(DataSource source) {
+        return new SqlSessionRepository(new JdbcTemplate(source));
+    }
+
+    @Bean
+    SessionActionAuthorization sessionActionAuthorization() {
+        return new SessionActionAuthorization() {
+            @Override public void requireRenewal(Session session) { throw new SessionRejectedException(); }
+            @Override public void requireAdmissibleActivity(Session session) { throw new SessionRejectedException(); }
+        };
+    }
+
+    @Bean
+    SessionAuthority sessionAuthority(SqlSessionRepository sessions, SqlUserStore users,
+            SessionActionAuthorization authorization, Clock clock) {
+        return new SessionAuthority(sessions, users, users, users, clock, new SecureRandom(), authorization);
     }
 }
