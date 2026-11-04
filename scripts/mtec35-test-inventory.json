@@ -1,5 +1,5 @@
 {
-  "normal_count": 275,
+  "normal_count": 279,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -164,7 +164,11 @@
       "expiredCurrentProofAllowsCleanupWithoutMutation",
       "consumedRefreshCannotRevokeWinningGeneration",
       "inactiveOwnerCanStillDestroyPresentedSession",
-      "simultaneousLogoutOnlyChangesVersionOnce"
+      "simultaneousLogoutOnlyChangesVersionOnce",
+      "httpBootstrapCookieOnlyAllowsManuallyConstructedClientHeaders",
+      "httpRefreshReplayReachesInternalConsumedClassification",
+      "simultaneousHttpRefreshHasOneWinnerAndNoDeadlineExtension",
+      "expiredHttpRefreshIssuesNoCredential"
     ],
     "com.markettec.users.adapters.out.jwt.InternalJwtServiceTest": [
       "issuesValidRs256TokenFromTrustedActiveSession",

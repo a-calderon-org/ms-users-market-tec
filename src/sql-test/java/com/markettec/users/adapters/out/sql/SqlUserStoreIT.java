@@ -732,9 +732,9 @@ class SqlUserStoreIT {
         var pool = Executors.newFixedThreadPool(2);
         try {
             var gate = new CountDownLatch(1);
-            Callable<SessionTokens> action = () -> {
+            Callable<SessionAuthority.RefreshedSession> action = () -> {
                 gate.await();
-                try { return authority.get().refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2"); }
+                try { return authority.get().refreshWithSnapshot(issued.refreshToken(), issued.csrfToken(), a -> "jwt2"); }
                 catch (SessionRejectedException rejected) { return null; }
             };
             var a = pool.submit(action); var b = pool.submit(action);
@@ -742,7 +742,7 @@ class SqlUserStoreIT {
             var first = a.get(30, TimeUnit.SECONDS);
             var second = b.get(30, TimeUnit.SECONDS);
             assertEquals(1, (first == null ? 0 : 1) + (second == null ? 0 : 1));
-            var winner = first == null ? second : first;
+            var winner = (first == null ? second : first).tokens();
             assertEquals(2, jdbc.queryForObject("""
                     SELECT COUNT(*) FROM dbo.session_credential_generations WHERE session_id=?
                     """, Integer.class, issued.sessionId()));
@@ -763,11 +763,20 @@ class SqlUserStoreIT {
             assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
                     assertThrows(SessionRejectedException.class, () -> authority.get().refresh(
                             issued.refreshToken(), issued.csrfToken(), a2 -> "jwt3")).reason());
+            assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
+                    assertThrows(SessionRejectedException.class, () -> authority.get().refreshWithSnapshot(
+                            issued.refreshToken(), issued.csrfToken(), a2 -> "jwt3")).reason());
             assertEquals(SessionRejectedException.Reason.PROOF_INVALID,
                     assertThrows(SessionRejectedException.class, () -> authority.get().refresh(
                             issued.refreshToken(), winner.csrfToken(), a2 -> "jwt3")).reason());
             assertEquals(SessionRejectedException.Reason.PROOF_INVALID,
                     assertThrows(SessionRejectedException.class, () -> authority.get().refresh(
+                            "0".repeat(64), issued.csrfToken(), a2 -> "jwt3")).reason());
+            assertEquals(SessionRejectedException.Reason.PROOF_INVALID,
+                    assertThrows(SessionRejectedException.class, () -> authority.get().refreshWithSnapshot(
+                            issued.refreshToken(), winner.csrfToken(), a2 -> "jwt3")).reason());
+            assertEquals(SessionRejectedException.Reason.PROOF_INVALID,
+                    assertThrows(SessionRejectedException.class, () -> authority.get().refreshWithSnapshot(
                             "0".repeat(64), issued.csrfToken(), a2 -> "jwt3")).reason());
             assertThrows(SessionRejectedException.class,
                     () -> authority.get().requireCsrf(issued.sessionId(), new UserId(issued.userId()), issued.csrfToken()));
@@ -928,7 +937,7 @@ class SqlUserStoreIT {
                 String.class, issued.sessionId());
         long beforeVersion = jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
                 Long.class, issued.sessionId());
-        assertThrows(IllegalStateException.class, () -> authority.refresh(issued.refreshToken(), issued.csrfToken(),
+        assertThrows(IllegalStateException.class, () -> authority.refreshWithSnapshot(issued.refreshToken(), issued.csrfToken(),
                 a -> { throw new IllegalStateException("signer unavailable"); }));
         assertEquals(beforeHash, jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
                 String.class, issued.sessionId()));
@@ -955,7 +964,7 @@ class SqlUserStoreIT {
                 WHERE session_id=? AND generation=0 AND consumed_ms IS NULL
                 """, Integer.class, issued.sessionId()));
         assertEquals(issued.csrfToken(), authority.recoverCsrf(issued.refreshToken()));
-        authority.refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2");
+        authority.refreshWithSnapshot(issued.refreshToken(), issued.csrfToken(), a -> "jwt2");
     }
 
     @Test

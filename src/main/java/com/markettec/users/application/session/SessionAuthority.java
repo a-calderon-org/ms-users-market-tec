@@ -157,44 +157,50 @@ public final class SessionAuthority {
     public SessionTokens refresh(String refresh, String csrf, InternalTokenIssuer jwt) {
         Objects.requireNonNull(jwt);
         if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
-        return transactions.execute(() -> {
-            String refreshHash = hash(refresh);
-            String csrfHash = hash(csrf);
-            Session before = sessions.loadByRefreshHashLocked(refreshHash).orElse(null);
-            if (before == null) {
-                var consumed = sessions.consumedByRefreshHashLocked(refreshHash);
-                if (consumed.isPresent() && consumed.get().session().validAt(now())
-                        && equal(consumed.get().verifiers().csrfHash(), csrfHash)) {
-                    LOG.warn("Consumed refresh generation reused");
-                    throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
-                }
-                throw new SessionRejectedException();
-            }
-            String id = before.sessionId();
-            if (!before.validAt(now())) throw new SessionRejectedException();
-            SessionVerifiers old = requireCredentials(id, refresh, csrf);
-            String nextRefresh = randomHex(32);
-            String nextHash = hash(nextRefresh);
-            long nextGeneration = old.generation() + 1;
-            String nextCsrf = csrfKeys.derive(csrfKeys.activeKid(), id, nextGeneration, nextHash);
-            sessions.rotateVerifiers(id, old, new SessionVerifiers(nextHash, hash(nextCsrf), nextGeneration, csrfKeys.activeKid()), now());
-            return tokens(before, jwt.issue(new AuthenticatedSession(id)), nextRefresh, nextCsrf);
-        });
+        return transactions.execute(() -> rotateLocked(refresh, csrf, jwt, false).tokens());
     }
 
     /** One transaction owns account validation, rotation, signing, and the response snapshot. */
     public RefreshedSession refreshWithSnapshot(String refresh, String csrf, InternalTokenIssuer jwt) {
+        Objects.requireNonNull(jwt);
         if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
         return transactions.execute(() -> {
-            Session before = sessions.loadByRefreshHashLocked(hash(refresh)).orElseThrow(SessionRejectedException::new);
-            if (!before.validAt(now())) throw new SessionRejectedException();
-            User user = users.findById(before.userId()).orElseThrow(SessionRejectedException::new);
-            user.requireActive();
-            before.requireRenewedAt();
-            SessionTokens result = refresh(refresh, csrf, jwt);
-            return new RefreshedSession(result, before, user, now());
+            Rotation rotation = rotateLocked(refresh, csrf, jwt, true);
+            return new RefreshedSession(rotation.tokens(), rotation.session(), rotation.user(), now());
         });
     }
+
+    /** Caller owns the transaction; a consumed proof and a live proof use the same lock path. */
+    private Rotation rotateLocked(String refresh, String csrf, InternalTokenIssuer jwt, boolean withSnapshot) {
+        String refreshHash = hash(refresh);
+        String csrfHash = hash(csrf);
+        Session before = sessions.loadByRefreshHashLocked(refreshHash).orElse(null);
+        if (before == null) {
+            var consumed = sessions.consumedByRefreshHashLocked(refreshHash);
+            if (consumed.isPresent() && consumed.get().session().validAt(now())
+                    && equal(consumed.get().verifiers().csrfHash(), csrfHash)) {
+                LOG.warn("Consumed refresh generation reused");
+                throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
+            }
+            throw new SessionRejectedException();
+        }
+        String id = before.sessionId();
+        if (!before.validAt(now())) throw new SessionRejectedException();
+        SessionVerifiers old = requireCredentials(id, refresh, csrf);
+        User user = null;
+        if (withSnapshot) {
+            user = users.findById(before.userId()).orElseThrow(SessionRejectedException::new);
+            user.requireActive();
+            before.requireRenewedAt();
+        }
+        String nextRefresh = randomHex(32);
+        String nextHash = hash(nextRefresh);
+        long nextGeneration = old.generation() + 1;
+        String nextCsrf = csrfKeys.derive(csrfKeys.activeKid(), id, nextGeneration, nextHash);
+        sessions.rotateVerifiers(id, old, new SessionVerifiers(nextHash, hash(nextCsrf), nextGeneration, csrfKeys.activeKid()), now());
+        return new Rotation(before, user, tokens(before, jwt.issue(new AuthenticatedSession(id)), nextRefresh, nextCsrf));
+    }
+    private record Rotation(Session session, User user, SessionTokens tokens) { }
 
     public record RefreshedSession(SessionTokens tokens, Session session, User user, Instant serverTime) {
         @Override public String toString() { return "RefreshedSession[credentials=REDACTED]"; }

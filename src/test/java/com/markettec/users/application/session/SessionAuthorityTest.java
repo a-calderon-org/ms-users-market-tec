@@ -2,10 +2,20 @@ package com.markettec.users.application.session;
 
 import com.markettec.users.adapters.out.memory.InMemoryUserStore;
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
+import com.markettec.users.adapters.out.jwt.InternalJwtService;
+import com.markettec.users.adapters.in.web.SessionBootstrapController;
+import com.markettec.users.adapters.in.web.SessionRefreshController;
 import com.markettec.users.application.ports.in.VerifiedExternalIdentity;
 import com.markettec.users.application.ports.out.UserTransactions;
 import com.markettec.users.domain.model.*;
 import org.junit.jupiter.api.Test;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import jakarta.servlet.http.Cookie;
 
 import java.net.URI;
 import java.security.SecureRandom;
@@ -14,6 +24,10 @@ import java.util.*;
 import java.util.concurrent.*;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 class SessionAuthorityTest {
     private final Instant start = Instant.parse("2026-11-03T12:00:00Z");
@@ -622,6 +636,173 @@ class SessionAuthorityTest {
         sessions.data.put(current.sessionId(), historical);
         assertThrows(SessionRejectedException.class, () -> authority.bootstrap(issued.refreshToken()));
         assertEquals(historical, sessions.loadLocked(issued.sessionId()).orElseThrow());
+    }
+
+    private static final String TEST_ORIGIN = "https://app.markettec.example";
+    private static final String TEST_JWT = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3OTM3MDc0NDB9.c2ln";
+
+    private MockMvc verificationMvc(SessionAuthority authority, InternalJwtService jwt) {
+        return MockMvcBuilders.standaloneSetup(
+                new SessionBootstrapController(authority, clock, TEST_ORIGIN, "https://api.markettec.example", true),
+                new SessionRefreshController(authority, jwt, clock, TEST_ORIGIN, "https://api.markettec.example", true))
+                .build();
+    }
+
+    @Test void httpBootstrapCookieOnlyAllowsManuallyConstructedClientHeaders() throws Exception {
+        create();
+        var authority = authority(allow);
+        var issued = authority.issue(authority.createAuthenticated(evidence), a -> "synthetic-jwt");
+        var mvc = verificationMvc(authority, mock(InternalJwtService.class));
+        var cookie = new Cookie("__Host-mtec-refresh", issued.refreshToken());
+        // MockMvc sends only the manually supplied headers. No bearer JWT or browser preflight is present.
+        mvc.perform(get("/v1/auth/session").secure(true).header("Origin", TEST_ORIGIN)
+                        .header("X-MTEC-Client", "web").cookie(cookie))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.csrfToken").value(issued.csrfToken()))
+                .andExpect(header().doesNotExist("Set-Cookie"));
+        mvc.perform(get("/v1/auth/session").secure(true).header("Origin", TEST_ORIGIN)
+                        .header("X-MTEC-Client", "web"))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"));
+        mvc.perform(get("/v1/auth/session").secure(true).header("Origin", TEST_ORIGIN)
+                        .header("X-MTEC-Client", "web").cookie(new Cookie("__Host-mtec-refresh", "f".repeat(64))))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/v1/auth/session").secure(true).header("Origin", "https://other.example")
+                        .header("X-MTEC-Client", "web").cookie(cookie))
+                .andExpect(status().isForbidden()).andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+        authority.revoke(issued.sessionId());
+        mvc.perform(get("/v1/auth/session").secure(true).header("Origin", TEST_ORIGIN)
+                        .header("X-MTEC-Client", "web").cookie(cookie))
+                .andExpect(status().isUnauthorized());
+        var later = authority.issue(authority.createAuthenticated(evidence), a -> "synthetic-jwt");
+        clock.set(start.plusSeconds(1800));
+        mvc.perform(get("/v1/auth/session").secure(true).header("Origin", TEST_ORIGIN)
+                        .header("X-MTEC-Client", "web")
+                        .cookie(new Cookie("__Host-mtec-refresh", later.refreshToken())))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test void httpRefreshReplayReachesInternalConsumedClassification() throws Exception {
+        create();
+        var authority = authority(allow);
+        var jwt = mock(InternalJwtService.class);
+        when(jwt.issue(any())).thenReturn(TEST_JWT);
+        var issued = authority.issue(authority.createAuthenticated(evidence), a -> "synthetic-jwt");
+        var mvc = verificationMvc(authority, jwt);
+        var original = post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
+                .header("X-MTEC-Client", "web").header("X-CSRF-Token", issued.csrfToken())
+                .cookie(new Cookie("__Host-mtec-refresh", issued.refreshToken()))
+                .contentType("application/json").content("{\"mode\":\"rotate\"}");
+        var winner = mvc.perform(original).andExpect(status().isOk())
+                .andExpect(jsonPath("$.csrfToken").exists()).andReturn();
+        assertNotNull(winner.getResponse().getHeader("Set-Cookie"));
+        var state = sessions.loadLocked(issued.sessionId()).orElseThrow();
+        assertEquals(1L, sessions.generation.get(issued.sessionId()));
+        var logger = (Logger) LoggerFactory.getLogger(SessionAuthority.class);
+        var events = new ListAppender<ILoggingEvent>();
+        events.start();
+        logger.addAppender(events);
+        try {
+            mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
+                            .header("X-MTEC-Client", "web").header("X-CSRF-Token", issued.csrfToken())
+                            .cookie(new Cookie("__Host-mtec-refresh", issued.refreshToken()))
+                            .contentType("application/json").content("{\"mode\":\"rotate\"}"))
+                    .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
+                    .andExpect(header().doesNotExist("Set-Cookie"));
+            assertEquals(1, events.list.size());
+            assertEquals("Consumed refresh generation reused", events.list.getFirst().getFormattedMessage());
+            assertFalse(events.list.getFirst().getFormattedMessage().contains(issued.refreshToken()));
+            assertFalse(events.list.getFirst().getFormattedMessage().contains(issued.csrfToken()));
+            mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
+                            .header("X-MTEC-Client", "web").header("X-CSRF-Token", "f".repeat(64))
+                            .cookie(new Cookie("__Host-mtec-refresh", issued.refreshToken()))
+                            .contentType("application/json").content("{\"mode\":\"rotate\"}"))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
+                    .andExpect(header().doesNotExist("Set-Cookie"));
+            assertEquals(1, events.list.size());
+            mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
+                            .header("X-MTEC-Client", "web").header("X-CSRF-Token", issued.csrfToken())
+                            .cookie(new Cookie("__Host-mtec-refresh", "0".repeat(64)))
+                            .contentType("application/json").content("{\"mode\":\"rotate\"}"))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
+                    .andExpect(header().doesNotExist("Set-Cookie"));
+            assertEquals(1, events.list.size());
+            mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
+                            .header("X-MTEC-Client", "web")
+                            .cookie(new Cookie("__Host-mtec-refresh", issued.refreshToken()))
+                            .contentType("application/json").content("{\"mode\":\"rotate\"}"))
+                    .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("CSRF_INVALID"));
+            assertEquals(1L, sessions.generation.get(issued.sessionId()));
+            assertEquals(state, sessions.loadLocked(issued.sessionId()).orElseThrow());
+            assertFalse(state.revoked());
+            assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
+                    assertThrows(SessionRejectedException.class, () -> authority.refresh(
+                            issued.refreshToken(), issued.csrfToken(), a -> "unused")).reason());
+            assertEquals(SessionRejectedException.Reason.PROOF_INVALID,
+                    assertThrows(SessionRejectedException.class, () -> authority.refresh(
+                            issued.refreshToken(), "f".repeat(64), a -> "unused")).reason());
+            assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
+                    assertThrows(SessionRejectedException.class, () -> authority.refreshWithSnapshot(
+                            issued.refreshToken(), issued.csrfToken(), jwt)).reason());
+            var responseCookie = winner.getResponse().getHeader("Set-Cookie");
+            var nextRefresh = responseCookie.substring(responseCookie.indexOf('=') + 1, responseCookie.indexOf(';'));
+            var nextCsrf = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readTree(winner.getResponse().getContentAsString()).path("csrfToken").asText();
+            authority.revoke(issued.sessionId());
+            mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
+                            .header("X-MTEC-Client", "web").header("X-CSRF-Token", nextCsrf)
+                            .cookie(new Cookie("__Host-mtec-refresh", nextRefresh))
+                            .contentType("application/json").content("{\"mode\":\"rotate\"}"))
+                    .andExpect(status().isUnauthorized()).andExpect(header().doesNotExist("Set-Cookie"));
+            verify(jwt, times(1)).issue(any());
+        } finally { logger.detachAppender(events); events.stop(); }
+    }
+
+    @Test void simultaneousHttpRefreshHasOneWinnerAndNoDeadlineExtension() throws Exception {
+        create();
+        var authority = authority(allow);
+        var jwt = mock(InternalJwtService.class);
+        when(jwt.issue(any())).thenReturn(TEST_JWT);
+        var issued = authority.issue(authority.createAuthenticated(evidence), a -> "synthetic-jwt");
+        var mvc = verificationMvc(authority, jwt);
+        var before = sessions.loadLocked(issued.sessionId()).orElseThrow();
+        var pool = Executors.newFixedThreadPool(2);
+        var gate = new CountDownLatch(1);
+        try {
+            Callable<Integer> action = () -> {
+                gate.await();
+                return mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
+                                .header("X-MTEC-Client", "web").header("X-CSRF-Token", issued.csrfToken())
+                                .cookie(new Cookie("__Host-mtec-refresh", issued.refreshToken()))
+                                .contentType("application/json").content("{\"mode\":\"rotate\"}"))
+                        .andReturn().getResponse().getStatus();
+            };
+            var first = pool.submit(action);
+            var second = pool.submit(action);
+            gate.countDown();
+            assertEquals(Set.of(200, 401), Set.of(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS)));
+            assertEquals(1L, sessions.generation.get(issued.sessionId()));
+            assertEquals(1, sessions.consumed.size());
+            assertEquals(before, sessions.loadLocked(issued.sessionId()).orElseThrow());
+            verify(jwt, times(1)).issue(any());
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test void expiredHttpRefreshIssuesNoCredential() throws Exception {
+        create();
+        var authority = authority(allow);
+        var jwt = mock(InternalJwtService.class);
+        var issued = authority.issue(authority.createAuthenticated(evidence), a -> "synthetic-jwt");
+        var mvc = verificationMvc(authority, jwt);
+        clock.set(start.plusSeconds(1800));
+        mvc.perform(post("/v1/auth/refresh").secure(true).header("Origin", TEST_ORIGIN)
+                        .header("X-MTEC-Client", "web").header("X-CSRF-Token", issued.csrfToken())
+                        .cookie(new Cookie("__Host-mtec-refresh", issued.refreshToken()))
+                        .contentType("application/json").content("{\"mode\":\"rotate\"}"))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
+                .andExpect(header().doesNotExist("Set-Cookie"));
+        verifyNoInteractions(jwt);
+        assertEquals(0L, sessions.generation.get(issued.sessionId()));
     }
 
     private static final class MemorySessions implements SessionRepository {
