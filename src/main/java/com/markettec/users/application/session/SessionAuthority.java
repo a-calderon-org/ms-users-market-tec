@@ -182,6 +182,24 @@ public final class SessionAuthority {
         });
     }
 
+    /** One transaction owns account validation, rotation, signing, and the response snapshot. */
+    public RefreshedSession refreshWithSnapshot(String refresh, String csrf, InternalTokenIssuer jwt) {
+        if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
+        return transactions.execute(() -> {
+            Session before = sessions.loadByRefreshHashLocked(hash(refresh)).orElseThrow(SessionRejectedException::new);
+            if (!before.validAt(now())) throw new SessionRejectedException();
+            User user = users.findById(before.userId()).orElseThrow(SessionRejectedException::new);
+            user.requireActive();
+            before.requireRenewedAt();
+            SessionTokens result = refresh(refresh, csrf, jwt);
+            return new RefreshedSession(result, before, user, now());
+        });
+    }
+
+    public record RefreshedSession(SessionTokens tokens, Session session, User user, Instant serverTime) {
+        @Override public String toString() { return "RefreshedSession[credentials=REDACTED]"; }
+    }
+
     /** Read-only recovery requiring possession of the current refresh credential. */
     public String recoverCsrf(String refresh) {
         if (!validSecret(refresh)) throw new SessionRejectedException();
@@ -195,6 +213,29 @@ public final class SessionAuthority {
             if (!equal(values.csrfHash(), hash(csrf))) throw new SessionRejectedException();
             return csrf;
         });
+    }
+
+    /** One locked, read-only credential and account snapshot for the cookie-only HTTP bootstrap. */
+    public SessionBootstrap bootstrap(String refresh) {
+        if (!validSecret(refresh)) throw new SessionRejectedException();
+        return transactions.execute(() -> {
+            String refreshHash = hash(refresh);
+            Session session = sessions.loadByRefreshHashLocked(refreshHash).orElseThrow(SessionRejectedException::new);
+            Instant observedAt = now();
+            if (!session.validAt(observedAt)) throw new SessionRejectedException();
+            SessionVerifiers values = sessions.verifiers(session.sessionId()).orElseThrow(SessionRejectedException::new);
+            if (!equal(values.refreshHash(), refreshHash)) throw new SessionRejectedException();
+            String csrf = csrfKeys.derive(values.keyId(), session.sessionId(), values.generation(), refreshHash);
+            if (!equal(values.csrfHash(), hash(csrf))) throw new SessionRejectedException();
+            session.requireRenewedAt();
+            User user = users.findById(session.userId()).orElseThrow(SessionRejectedException::new);
+            user.requireActive();
+            return new SessionBootstrap(session, user, csrf, observedAt);
+        });
+    }
+
+    public record SessionBootstrap(Session session, User user, String csrfToken, Instant serverTime) {
+        @Override public String toString() { return "SessionBootstrap[credentials=REDACTED]"; }
     }
 
     /** Synchronizer proof is bound to a live session and constant-time compared. */
@@ -215,10 +256,19 @@ public final class SessionAuthority {
     public void logout(String refresh, String csrf) {
         if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
         transactions.execute(() -> {
-            Session session = sessions.loadByRefreshHashLocked(hash(refresh)).orElseThrow(SessionRejectedException::new);
-            if (!session.validAt(now())) throw new SessionRejectedException();
-            requireCredentials(session.sessionId(), refresh, csrf);
-            sessions.replace(session, session.revoke());
+            String refreshHash = hash(refresh);
+            String csrfHash = hash(csrf);
+            Session session = sessions.loadByRefreshHashLocked(refreshHash).orElse(null);
+            if (session != null) {
+                SessionVerifiers values = requireCredentials(session.sessionId(), refresh, csrf);
+                if (!equal(values.csrfHash(), csrfHash)) throw new SessionRejectedException();
+                if (session.validAt(now())) sessions.replace(session, session.revoke());
+                // An expired session remains closed. Its exact current pair is sufficient for cleanup.
+                return null;
+            }
+            var closed = sessions.closedByRefreshHashLocked(refreshHash).orElseThrow(SessionRejectedException::new);
+            if (!closed.session().revoked() || !equal(closed.verifiers().csrfHash(), csrfHash))
+                throw new SessionRejectedException();
             return null;
         });
     }

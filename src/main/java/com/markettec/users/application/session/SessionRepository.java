@@ -15,5 +15,7 @@ public interface SessionRepository {
     void rotateVerifiers(String sessionId, SessionVerifiers expected, SessionVerifiers replacement, Instant consumedAt);
     /** Only matching, consumed proofs are returned; never grants authorization. */
     Optional<ConsumedCredential> consumedByRefreshHashLocked(String refreshHash);
+    /** Last unconsumed generation, read only after taking its owning session lock. */
+    Optional<ConsumedCredential> closedByRefreshHashLocked(String refreshHash);
     record ConsumedCredential(Session session, SessionVerifiers verifiers) { }
 }
