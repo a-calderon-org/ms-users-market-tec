@@ -34,12 +34,14 @@ class SessionAuthorityTest {
                     var oldData = new HashMap<>(sessions.data);
                     var oldCredentials = new HashMap<>(sessions.credentials);
                     var oldConsumed = new HashMap<>(sessions.consumed);
+                    var oldClosed = new HashMap<>(sessions.closed);
                     var oldGeneration = new HashMap<>(sessions.generation);
                     try { return users.execute(work); }
                     catch (RuntimeException | Error failure) {
                         sessions.data.clear(); sessions.data.putAll(oldData);
                         sessions.credentials.clear(); sessions.credentials.putAll(oldCredentials);
                         sessions.consumed.clear(); sessions.consumed.putAll(oldConsumed);
+                        sessions.closed.clear(); sessions.closed.putAll(oldClosed);
                         sessions.generation.clear(); sessions.generation.putAll(oldGeneration);
                         throw failure;
                     }
@@ -380,6 +382,74 @@ class SessionAuthorityTest {
         assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(second.refreshToken(), second.csrfToken(), a -> "jwt"));
     }
 
+    @Test void logoutIsIdempotentOnlyForExactLastProofAndDoesNotAffectOtherSessions() {
+        create();
+        var auth = authority(allow);
+        var first = auth.issue(auth.createAuthenticated(evidence), a -> "jwt");
+        var other = auth.issue(auth.createAuthenticated(evidence), a -> "jwt");
+        Session before = sessions.loadLocked(first.sessionId()).orElseThrow();
+        auth.logout(first.refreshToken(), first.csrfToken());
+        Session closed = sessions.loadLocked(first.sessionId()).orElseThrow();
+        assertEquals(before.version() + 1, closed.version());
+        assertEquals(before.deadline(), closed.deadline());
+        assertEquals(before.lastActivityAt(), closed.lastActivityAt());
+        assertEquals(before.renewedAt(), closed.renewedAt());
+        auth.logout(first.refreshToken(), first.csrfToken());
+        assertEquals(closed, sessions.loadLocked(first.sessionId()).orElseThrow());
+        assertTrue(sessions.loadLocked(other.sessionId()).orElseThrow().validAt(start));
+        assertThrows(SessionRejectedException.class, () -> auth.logout(first.refreshToken(), other.csrfToken()));
+        assertThrows(SessionRejectedException.class, () -> auth.logout("f".repeat(64), first.csrfToken()));
+    }
+
+    @Test void expiredCurrentProofAllowsCleanupWithoutMutation() {
+        create();
+        var auth = authority(allow);
+        var issued = auth.issue(auth.createAuthenticated(evidence), a -> "jwt");
+        Session before = sessions.loadLocked(issued.sessionId()).orElseThrow();
+        clock.set(before.deadline());
+        auth.logout(issued.refreshToken(), issued.csrfToken());
+        assertEquals(before, sessions.loadLocked(issued.sessionId()).orElseThrow());
+        assertThrows(SessionRejectedException.class, () -> auth.logout(issued.refreshToken(), "f".repeat(64)));
+    }
+
+    @Test void consumedRefreshCannotRevokeWinningGeneration() {
+        create();
+        var auth = authority(allow);
+        var old = auth.issue(auth.createAuthenticated(evidence), a -> "jwt");
+        var winner = auth.refresh(old.refreshToken(), old.csrfToken(), a -> "jwt");
+        assertThrows(SessionRejectedException.class, () -> auth.logout(old.refreshToken(), old.csrfToken()));
+        assertTrue(sessions.loadLocked(winner.sessionId()).orElseThrow().validAt(start));
+        auth.logout(winner.refreshToken(), winner.csrfToken());
+        assertThrows(SessionRejectedException.class, () -> auth.logout(old.refreshToken(), old.csrfToken()));
+    }
+
+    @Test void inactiveOwnerCanStillDestroyPresentedSession() {
+        create();
+        var auth = authority(allow);
+        var issued = auth.issue(auth.createAuthenticated(evidence), a -> "jwt");
+        var owner = users.findById(new UserId(issued.userId())).orElseThrow();
+        users.replace(owner, owner.deactivate());
+        auth.logout(issued.refreshToken(), issued.csrfToken());
+        assertTrue(sessions.loadLocked(issued.sessionId()).orElseThrow().revoked());
+    }
+
+    @Test void simultaneousLogoutOnlyChangesVersionOnce() throws Exception {
+        create();
+        var auth = authority(allow);
+        var issued = auth.issue(auth.createAuthenticated(evidence), a -> "jwt");
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            Callable<Void> action = () -> {
+                gate.await(); auth.logout(issued.refreshToken(), issued.csrfToken()); return null;
+            };
+            var a = pool.submit(action); var b = pool.submit(action);
+            gate.countDown();
+            a.get(10, TimeUnit.SECONDS); b.get(10, TimeUnit.SECONDS);
+            assertEquals(1, sessions.loadLocked(issued.sessionId()).orElseThrow().version());
+        } finally { pool.shutdownNow(); }
+    }
+
     @Test void refreshHonorsIdleWindowAndAbsoluteDeadlines() {
         create();
         var idle = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
@@ -558,6 +628,7 @@ class SessionAuthorityTest {
         private final Map<String, Session> data = new HashMap<>();
         private final Map<String, SessionVerifiers> credentials = new HashMap<>();
         private final Map<String, ConsumedCredential> consumed = new HashMap<>();
+        private final Map<String, ConsumedCredential> closed = new HashMap<>();
         private final Map<String, Long> generation = new HashMap<>();
         volatile boolean failAfterConsumption;
         volatile boolean fail;
@@ -571,7 +642,10 @@ class SessionAuthorityTest {
         public synchronized void replace(Session old, Session next) {
             check();
             if (!data.replace(old.sessionId(), old, next)) throw new IllegalStateException("stale");
-            if (next.revoked()) credentials.remove(old.sessionId());
+            if (next.revoked()) {
+                SessionVerifiers values = credentials.remove(old.sessionId());
+                if (values != null) closed.put(values.refreshHash(), new ConsumedCredential(next, values));
+            }
         }
         public synchronized Optional<SessionVerifiers> verifiers(String id) { check(); return Optional.ofNullable(credentials.get(id)); }
         public synchronized void initializeVerifiers(String id, SessionVerifiers value) {
@@ -590,6 +664,9 @@ class SessionAuthorityTest {
         }
         public synchronized Optional<ConsumedCredential> consumedByRefreshHashLocked(String hash) {
             check(); return Optional.ofNullable(consumed.get(hash));
+        }
+        public synchronized Optional<ConsumedCredential> closedByRefreshHashLocked(String hash) {
+            check(); return Optional.ofNullable(closed.get(hash));
         }
         private void check() { if (fail) throw new IllegalStateException("store unavailable"); }
     }

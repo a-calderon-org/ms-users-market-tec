@@ -1,5 +1,5 @@
 {
-  "normal_count": 264,
+  "normal_count": 275,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -11,6 +11,7 @@
     "concurrentLinksToDifferentOwnersHaveExactlyOneWinner",
     "concurrentRecentProofConsumersHaveOneCommit",
     "concurrentRegistrationsRetryWholeWorkWithoutOrphanAccounts",
+    "concurrentSqlLogoutCommitsOneRevocation",
     "concurrentUpdatesHaveOneWinnerAndOneStaleWriter",
     "databaseEnforcesUniquenessAcrossProvidersWithoutAdapterLookup",
     "databaseRejectsOrphanProfilesAndIdentities",
@@ -19,6 +20,7 @@
     "errorReportedAfterRealCommitNeverReplaysCommittedWork",
     "failedAggregateUpdateRestoresProfileStatusAndVersion",
     "failedRecentPersistenceRollsBackSensitiveUnit",
+    "failedSqlLogoutRollsBackRevocationAndVerifierRemoval",
     "failedSqlRefreshRollsBackVerifierAndSessionDeadline",
     "flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum",
     "googleLoginIntentIsAtomicAcrossConcurrentSqlExchangesAndRollback",
@@ -27,8 +29,8 @@
     "googleRegistrationLinkFailureRollsBackUserProfileAndIntentOnSqlServer",
     "identityKeysAreExactCaseSensitiveAndHaveNoLengthTruncation",
     "linkingAndDeactivationSerializeAcrossConnections",
-    "missingIdsAndIdentitiesReturnEmpty",
     "migrationRetainsUnknownHistoricalRenewalUntilExplicitRenewal",
+    "missingIdsAndIdentitiesReturnEmpty",
     "nestedUnitRollsBackToSavepointWithoutLosingOuterWrites",
     "opaqueRefreshRotatesOnceAcrossConcurrentSqlTransactionsAndRevocation",
     "persistsAndFindsEveryUserAndProfileFieldLosslessly",
@@ -49,6 +51,8 @@
     "sessionCreationRenewalAndExpiryPersistOnRealSqlServer",
     "sessionRevocationAndRenewalSerializeOnRealSqlServer",
     "sqlCsrfRecoverySurvivesRestartAndRejectsMissingLegacyAndExpiredKeys",
+    "sqlLogoutKeepsOnlyLastProofForIdempotentCleanup",
+    "sqlRefreshLogoutRaceCannotRevokeRotatedWinner",
     "staleAggregateCannotOverwriteCommittedChanges",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",
@@ -155,7 +159,12 @@
       "bootstrapSerializesWithRefreshAndRevocation",
       "bootstrapRejectsInactiveAccount",
       "httpRefreshReturnsCoherentSnapshotWithoutChangingSessionState",
-      "httpRefreshRollsBackOnSigningFailureAndRejectsInactiveAccount"
+      "httpRefreshRollsBackOnSigningFailureAndRejectsInactiveAccount",
+      "logoutIsIdempotentOnlyForExactLastProofAndDoesNotAffectOtherSessions",
+      "expiredCurrentProofAllowsCleanupWithoutMutation",
+      "consumedRefreshCannotRevokeWinningGeneration",
+      "inactiveOwnerCanStillDestroyPresentedSession",
+      "simultaneousLogoutOnlyChangesVersionOnce"
     ],
     "com.markettec.users.adapters.out.jwt.InternalJwtServiceTest": [
       "issuesValidRs256TokenFromTrustedActiveSession",
@@ -240,6 +249,14 @@
       "invalidShapeOriginCookieAndCsrfNeverRotate",
       "unknownOrConsumedRefreshIssuesNoCredential",
       "preflightRequiresExactOriginPostAndAllowedHeaders"
+    ],
+    "com.markettec.users.adapters.in.web.SessionLogoutControllerTest": [
+      "currentLogoutClearsCookieWithNoBody",
+      "missingCookieIsIdempotentAfterRequestValidation",
+      "invalidShapeOriginClientProofAndCookieNeverReachAuthority",
+      "unknownOrConsumedProofDoesNotConfirmLogout",
+      "preflightOnlyAllowsExactPostAndHeaders",
+      "configurationRequiresVerifiedHttps"
     ]
   }
 }

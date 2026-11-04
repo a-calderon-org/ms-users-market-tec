@@ -145,6 +145,23 @@ public final class SqlSessionRepository implements SessionRepository {
                 .stream().findFirst();
     }
 
+    @Override public Optional<ConsumedCredential> closedByRefreshHashLocked(String hash) {
+        requireTransaction();
+        if (hash == null || !hash.matches("[0-9a-f]{64}")) throw new UserPersistenceException("Invalid verifier");
+        var ids = jdbc.query("""
+            SELECT session_id FROM dbo.session_credential_generations WHERE refresh_hash=?
+            """, (rs, row) -> rs.getString(1).trim(), hash);
+        if (ids.isEmpty()) return Optional.empty();
+        Session session = loadLocked(ids.getFirst()).orElseThrow(() -> new UserPersistenceException("Missing session"));
+        return jdbc.query("""
+            SELECT csrf_hash,generation,csrf_key_id FROM dbo.session_credential_generations
+            WHERE session_id=? AND refresh_hash=? AND consumed_ms IS NULL
+            """, (rs, row) -> new ConsumedCredential(session,
+                new SessionVerifiers(hash, rs.getString(1).trim(), rs.getLong(2),
+                    rs.getString(3) == null ? "legacy" : rs.getString(3).trim())), session.sessionId(), hash)
+                .stream().findFirst();
+    }
+
     private static long ms(Instant value) { return value.toEpochMilli(); }
     private static Session read(ResultSet rs) throws SQLException {
         return new Session(rs.getString("session_id").trim(), new UserId(rs.getString("user_id")),

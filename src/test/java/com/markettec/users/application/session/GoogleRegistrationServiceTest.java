@@ -71,6 +71,7 @@ class GoogleRegistrationServiceTest {
             if (credentials.putIfAbsent(id, value) != null) throw new IllegalStateException("duplicate");
         }
         public Optional<ConsumedCredential> consumedByRefreshHashLocked(String hash) { return Optional.empty(); }
+        public Optional<ConsumedCredential> closedByRefreshHashLocked(String hash) { return Optional.empty(); }
         public void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next, Instant consumedAt) {
             if (!credentials.replace(id, old, next)) throw new IllegalStateException("stale");
         }

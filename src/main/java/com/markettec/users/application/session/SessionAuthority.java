@@ -256,10 +256,19 @@ public final class SessionAuthority {
     public void logout(String refresh, String csrf) {
         if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
         transactions.execute(() -> {
-            Session session = sessions.loadByRefreshHashLocked(hash(refresh)).orElseThrow(SessionRejectedException::new);
-            if (!session.validAt(now())) throw new SessionRejectedException();
-            requireCredentials(session.sessionId(), refresh, csrf);
-            sessions.replace(session, session.revoke());
+            String refreshHash = hash(refresh);
+            String csrfHash = hash(csrf);
+            Session session = sessions.loadByRefreshHashLocked(refreshHash).orElse(null);
+            if (session != null) {
+                SessionVerifiers values = requireCredentials(session.sessionId(), refresh, csrf);
+                if (!equal(values.csrfHash(), csrfHash)) throw new SessionRejectedException();
+                if (session.validAt(now())) sessions.replace(session, session.revoke());
+                // An expired session remains closed. Its exact current pair is sufficient for cleanup.
+                return null;
+            }
+            var closed = sessions.closedByRefreshHashLocked(refreshHash).orElseThrow(SessionRejectedException::new);
+            if (!closed.session().revoked() || !equal(closed.verifiers().csrfHash(), csrfHash))
+                throw new SessionRejectedException();
             return null;
         });
     }

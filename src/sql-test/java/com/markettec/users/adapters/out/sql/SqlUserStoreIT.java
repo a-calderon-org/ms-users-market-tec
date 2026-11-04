@@ -781,6 +781,137 @@ class SqlUserStoreIT {
     }
 
     @Test
+    void sqlLogoutKeepsOnlyLastProofForIdempotentCleanup() {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        seedGoogle(proof, now);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
+        var old = authority.issue(authority.createAuthenticated(proof), a -> "jwt");
+        var winner = authority.refresh(old.refreshToken(), old.csrfToken(), a -> "jwt");
+        assertThrows(SessionRejectedException.class, () -> authority.logout(old.refreshToken(), old.csrfToken()));
+        assertEquals(0L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, winner.sessionId()));
+        authority.logout(winner.refreshToken(), winner.csrfToken());
+        assertEquals(1L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, winner.sessionId()));
+        authority.logout(winner.refreshToken(), winner.csrfToken());
+        assertEquals(1L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, winner.sessionId()));
+        assertThrows(SessionRejectedException.class, () -> authority.logout(old.refreshToken(), old.csrfToken()));
+        assertThrows(SessionRejectedException.class, () -> authority.logout(winner.refreshToken(), old.csrfToken()));
+        assertNull(jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
+                String.class, winner.sessionId()));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.session_credential_generations
+                WHERE session_id=? AND consumed_ms IS NULL
+                """, Integer.class, winner.sessionId()));
+    }
+
+    @Test
+    void concurrentSqlLogoutCommitsOneRevocation() throws Exception {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        seedGoogle(proof, now);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        Supplier<SessionAuthority> authority = () -> new SessionAuthority(new SqlSessionRepository(jdbc),
+                store, store, store, Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
+        var issued = authority.get().issue(authority.get().createAuthenticated(proof), a -> "jwt");
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            Callable<Void> action = () -> {
+                gate.await();
+                authority.get().logout(issued.refreshToken(), issued.csrfToken());
+                return null;
+            };
+            var first = pool.submit(action); var second = pool.submit(action);
+            gate.countDown();
+            first.get(30, TimeUnit.SECONDS);
+            second.get(30, TimeUnit.SECONDS);
+            assertEquals(1L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                    Long.class, issued.sessionId()));
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void sqlRefreshLogoutRaceCannotRevokeRotatedWinner() throws Exception {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        seedGoogle(proof, now);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        Supplier<SessionAuthority> authority = () -> new SessionAuthority(new SqlSessionRepository(jdbc),
+                store, store, store, Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
+        var issued = authority.get().issue(authority.get().createAuthenticated(proof), a -> "jwt");
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            var refresh = pool.submit(() -> {
+                gate.await();
+                try { return authority.get().refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2"); }
+                catch (SessionRejectedException rejected) { return null; }
+            });
+            var logout = pool.submit(() -> {
+                gate.await();
+                try { authority.get().logout(issued.refreshToken(), issued.csrfToken()); return true; }
+                catch (SessionRejectedException rejected) { return false; }
+            });
+            gate.countDown();
+            var rotated = refresh.get(30, TimeUnit.SECONDS);
+            boolean closed = logout.get(30, TimeUnit.SECONDS);
+            assertNotEquals(closed, rotated != null);
+            Session state = authority.get().current(issued.sessionId()).orElse(null);
+            if (rotated != null) {
+                assertNotNull(state);
+                assertEquals(rotated.csrfToken(), authority.get().recoverCsrf(rotated.refreshToken()));
+            } else {
+                assertNull(state);
+                assertThrows(SessionRejectedException.class,
+                        () -> authority.get().refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt3"));
+            }
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void failedSqlLogoutRollsBackRevocationAndVerifierRemoval() {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        seedGoogle(proof, now);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
+        var issued = authority.issue(authority.createAuthenticated(proof), a -> "jwt");
+        assertThrows(IllegalStateException.class, () -> store.execute(() -> {
+            authority.logout(issued.refreshToken(), issued.csrfToken());
+            throw new IllegalStateException("abort outer transaction");
+        }));
+        assertEquals(0L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, issued.sessionId()));
+        assertNotNull(jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
+                String.class, issued.sessionId()));
+        authority.logout(issued.refreshToken(), issued.csrfToken());
+        assertEquals(1L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
+                Long.class, issued.sessionId()));
+    }
+
+    @Test
     void failedSqlRefreshRollsBackVerifierAndSessionDeadline() {
         var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
                 new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
