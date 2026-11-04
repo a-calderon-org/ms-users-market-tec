@@ -15,6 +15,7 @@ class ProtectedUserOperationsTest {
     private static final UserId OTHER = new UserId("usr_223e4567-e89b-42d3-a456-426614174000");
     private static final String SID = "0123456789abcdef0123456789abcdef";
     private static final Instant NOW = Instant.parse("2026-11-03T12:00:00Z");
+    private static final ProfileDetails DETAILS = new ProfileDetails("ana", "Ana", "Lopez");
     private final AtomicReference<Instant> time = new AtomicReference<>(NOW);
     private final Clock clock = new Clock() {
         public ZoneId getZone() { return ZoneOffset.UTC; }
@@ -44,48 +45,55 @@ class ProtectedUserOperationsTest {
 
     @Test void invalidTokenAndMissingPermissionNeverReachWork() {
         when(verifier.verify("invalid")).thenThrow(new IllegalArgumentException());
-        assertThrows(IllegalArgumentException.class, () -> boundary.deactivateUser("invalid", OWNER));
+        assertThrows(IllegalArgumentException.class, () -> boundary.updateOwnProfile("invalid", OWNER, DETAILS));
         valid();
-        assertThrows(SessionRejectedException.class, () -> boundary.deactivateUser("jwt", OTHER));
+        assertThrows(SessionRejectedException.class, () -> boundary.updateOwnProfile("jwt", OTHER, DETAILS));
         verifyNoInteractions(users, authority);
     }
 
     @Test void sensitiveWorkRequiresAuthorityAndRejectsFailure() {
         valid();
         when(authority.withCurrentSession(eq(SID), eq(OWNER), any())).thenThrow(new SessionRejectedException());
-        assertThrows(SessionRejectedException.class, () -> boundary.deactivateUser("jwt", OWNER));
+        assertThrows(SessionRejectedException.class, () -> boundary.updateOwnProfile("jwt", OWNER, DETAILS));
         verifyNoInteractions(users);
         when(authority.withCurrentSession(eq(SID), eq(OWNER), any())).thenThrow(new IllegalStateException("unavailable"));
-        assertThrows(IllegalStateException.class, () -> boundary.deactivateUser("jwt", OWNER));
+        assertThrows(IllegalStateException.class, () -> boundary.updateOwnProfile("jwt", OWNER, DETAILS));
         verifyNoInteractions(users);
     }
 
     @Test void authorizedSensitiveWorkUsesVerifiedIdentityAndSession() {
         valid();
-        User result = mock(User.class);
+        UserProfile result = mock(UserProfile.class);
         when(authority.withCurrentSession(eq(SID), eq(OWNER), any())).thenAnswer(invocation -> {
-            @SuppressWarnings("unchecked") java.util.function.Supplier<User> work = invocation.getArgument(2);
+            @SuppressWarnings("unchecked") java.util.function.Supplier<UserProfile> work = invocation.getArgument(2);
             return work.get();
         });
-        when(users.deactivateUser(any(), eq(OWNER))).thenAnswer(invocation -> {
+        when(users.updateOwnProfile(any(), eq(OWNER), eq(DETAILS))).thenAnswer(invocation -> {
             AuthenticatedPrincipal principal = invocation.getArgument(0);
             assertEquals(OWNER, principal.userId());
             return result;
         });
-        assertSame(result, boundary.deactivateUser("jwt", OWNER));
+        assertSame(result, boundary.updateOwnProfile("jwt", OWNER, DETAILS));
         verify(authority).withCurrentSession(eq(SID), eq(OWNER), any());
     }
 
     @Test void expiryDuringSensitiveWorkRejectsResult() {
         valid();
         when(authority.withCurrentSession(eq(SID), eq(OWNER), any())).thenAnswer(invocation -> {
-            @SuppressWarnings("unchecked") java.util.function.Supplier<User> work = invocation.getArgument(2);
+            @SuppressWarnings("unchecked") java.util.function.Supplier<UserProfile> work = invocation.getArgument(2);
             return work.get();
         });
-        when(users.deactivateUser(any(), eq(OWNER))).thenAnswer(invocation -> {
+        when(users.updateOwnProfile(any(), eq(OWNER), eq(DETAILS))).thenAnswer(invocation -> {
             time.set(NOW.plusSeconds(100));
-            return mock(User.class);
+            return mock(UserProfile.class);
         });
+        assertThrows(SessionRejectedException.class, () -> boundary.updateOwnProfile("jwt", OWNER, DETAILS));
+    }
+
+    @Test void deactivationAndLinkStayClosedWithoutIndependentProofs() {
+        valid();
         assertThrows(SessionRejectedException.class, () -> boundary.deactivateUser("jwt", OWNER));
+        assertThrows(SessionRejectedException.class, () -> boundary.linkExternalIdentity("jwt", OWNER, null));
+        verifyNoInteractions(users, authority);
     }
 }

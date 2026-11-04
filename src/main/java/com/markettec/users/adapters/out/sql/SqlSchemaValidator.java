@@ -22,7 +22,8 @@ public final class SqlSchemaValidator {
                 .baselineOnMigrate(false).load().validate();
         Map<String, List<String>> primaryKeys = Map.of("users", List.of("user_id"),
                 "profiles", List.of("user_id"), "external_identities", List.of("issuer_hash", "subject_hash"),
-                "sessions", List.of("session_id"));
+                "sessions", List.of("session_id"),
+                "recent_authentication_attempts", List.of("attempt_id"));
         primaryKeys.forEach((table, expected) -> {
             var actual = jdbc.queryForList("""
                     SELECT c.name FROM sys.indexes i
@@ -39,17 +40,28 @@ public final class SqlSchemaValidator {
                 SELECT name FROM sys.foreign_keys WHERE referenced_object_id=OBJECT_ID('dbo.users')
                     AND is_disabled=0 AND is_not_trusted=0 AND delete_referential_action=0
                 """, String.class));
-        if (!foreignKeys.containsAll(Set.of("fk_profiles_user", "fk_external_identities_user", "fk_sessions_user"))) {
+        if (!foreignKeys.containsAll(Set.of("fk_profiles_user", "fk_external_identities_user", "fk_sessions_user",
+                "fk_recent_attempt_user"))) {
             throw new UserPersistenceException("Missing SQL referential constraints");
         }
+        Integer sessionForeignKey = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys.foreign_keys WHERE name='fk_recent_attempt_session'
+                    AND parent_object_id=OBJECT_ID('dbo.recent_authentication_attempts')
+                    AND referenced_object_id=OBJECT_ID('dbo.sessions')
+                    AND is_disabled=0 AND is_not_trusted=0 AND delete_referential_action=0
+                """, Integer.class);
+        if (sessionForeignKey == null || sessionForeignKey != 1)
+            throw new UserPersistenceException("Missing recent attempt session constraint");
         var checks = Set.copyOf(jdbc.queryForList("""
                 SELECT name FROM sys.check_constraints WHERE is_disabled=0 AND is_not_trusted=0
                     AND parent_object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'),
-                        OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'))
+                        OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'),
+                        OBJECT_ID('dbo.recent_authentication_attempts'))
                 """, String.class));
         if (!checks.containsAll(Set.of("ck_users_status", "ck_users_version", "ck_profiles_registered",
                 "ck_profiles_updated", "ck_external_identities_provider", "ck_sessions_version",
-                "ck_sessions_deadlines"))) {
+                "ck_sessions_deadlines", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
+                "ck_recent_attempt_method"))) {
             throw new UserPersistenceException("Missing SQL check constraints");
         }
         // Verify names, types, lengths and NOT NULL using engine metadata. No DDL is issued.
@@ -57,7 +69,8 @@ public final class SqlSchemaValidator {
                 SELECT OBJECT_NAME(c.object_id) AS table_name, c.name, TYPE_NAME(c.user_type_id) AS type_name,
                     c.max_length, c.is_nullable FROM sys.columns c
                 WHERE c.object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'),
-                    OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'))
+                    OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'),
+                    OBJECT_ID('dbo.recent_authentication_attempts'))
                 """, (rs, row) -> Map.entry(rs.getString("table_name") + "." + rs.getString("name"),
                 rs.getString("type_name") + ":" + rs.getInt("max_length") + ":" + rs.getBoolean("is_nullable")))
                 .stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
@@ -89,6 +102,17 @@ public final class SqlSchemaValidator {
             require(columns, "sessions." + name, "bigint:8:false");
         }
         require(columns, "sessions.revoked", "bit:1:false");
+        for (String name : List.of("attempt_id", "session_id"))
+            require(columns, "recent_authentication_attempts." + name, "char:32:false");
+        require(columns, "recent_authentication_attempts.user_id", "varchar:40:false");
+        require(columns, "recent_authentication_attempts.method", "varchar:24:false");
+        require(columns, "recent_authentication_attempts.operation", "varchar:80:false");
+        require(columns, "recent_authentication_attempts.target", "nvarchar:640:false");
+        require(columns, "recent_authentication_attempts.nonce", "char:64:false");
+        for (String name : List.of("created_ms", "expires_ms", "version"))
+            require(columns, "recent_authentication_attempts." + name, "bigint:8:false");
+        require(columns, "recent_authentication_attempts.authenticated_ms", "bigint:8:true");
+        require(columns, "recent_authentication_attempts.consumed", "bit:1:false");
         var hashes = jdbc.queryForList("""
                 SELECT name FROM sys.computed_columns WHERE object_id=OBJECT_ID('dbo.external_identities')
                     AND is_persisted=1 AND LOWER(definition) LIKE '%hashbytes%sha2_256%'
