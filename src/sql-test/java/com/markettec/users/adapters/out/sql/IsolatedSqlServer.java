@@ -142,6 +142,15 @@ final class IsolatedSqlServer implements AutoCloseable {
         return source;
     }
 
+    java.util.Properties workerConnection() {
+        var config = new java.util.Properties();
+        config.setProperty("port", Integer.toString(mappedPort));
+        config.setProperty("password", password);
+        config.setProperty("trustStore", temporary.resolve("trust.p12").toString());
+        config.setProperty("trustPassword", trustPassword);
+        return config;
+    }
+
     SQLServerDataSource restrictedRuntimeSource() throws Exception {
         if (restrictedRuntime != null) return restrictedRuntime;
         String runtimePassword = "Runtime!" + UUID.randomUUID();
