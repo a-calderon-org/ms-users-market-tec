@@ -1,5 +1,5 @@
 {
-  "normal_count": 285,
+  "normal_count": 289,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -180,6 +180,9 @@
       "rejectsExpiredSession",
       "rejectsMissingAndFailedSessionAuthority",
       "tokenNeverExceeds240Seconds",
+      "residualAfterConfirmedRevocationEndsAtExpiry",
+      "clockLagConsumesTheRemainingSixtySecondBudget",
+      "eachSessionDeadlineCapsIssuanceNearItsBoundary",
       "renewableDeadlineCapsExpiration",
       "idleDeadlineCapsExpiration",
       "absoluteDeadlineCapsExpiration",
@@ -187,6 +190,7 @@
       "rejectsWrongIssuerAndAudience",
       "rejectsUnknownKidAndOtherAlgorithm",
       "rejectsAtExactExpiryWithoutLeeway",
+      "rejectsOtherwiseValidTokenLongerThan240Seconds",
       "rotationOverlapsOldPublicAndNewSigningKey",
       "jwksContainsOnlyPublicMaterial",
       "rejectsMalformedOversizedAndJoseUrls",

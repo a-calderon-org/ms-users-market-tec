@@ -137,6 +137,62 @@ class InternalJwtServiceTest {
         assertEquals(NOW.plusSeconds(240), service().verify(issue(service(), session())).expiresAt());
     }
 
+    @Test void residualAfterConfirmedRevocationEndsAtExpiry() throws Exception {
+        InternalJwtKeyRing keys = ring("new", material("new", first, true));
+        InternalJwtService issuer = service(keys, clock);
+        String token = issue(issuer, session());
+        Instant expiry = SignedJWT.parse(token).getJWTClaimsSet().getExpirationTime().toInstant();
+        Instant revokedAt = NOW.plusNanos(1);
+        when(authority.current(SID)).thenReturn(Optional.empty()); // committed revocation snapshot
+        assertThrows(SessionRejectedException.class, () -> issuer.issue(authenticated(SID)));
+        assertEquals(240, expiry.getEpochSecond() - NOW.getEpochSecond());
+        assertEquals(239_999_999_999L, java.time.Duration.between(revokedAt, expiry).toNanos());
+        assertEquals(SID, service(keys, Clock.fixed(expiry.minusNanos(1), ZoneOffset.UTC))
+                .verify(token).sessionId());
+        assertThrows(InternalJwtService.InvalidInternalJwtException.class,
+                () -> service(keys, Clock.fixed(expiry, ZoneOffset.UTC)).verify(token));
+        assertThrows(InternalJwtService.InvalidInternalJwtException.class,
+                () -> service(keys, Clock.fixed(expiry.plusNanos(1), ZoneOffset.UTC)).verify(token));
+        verify(authority, times(2)).current(SID); // verification never queries revocation
+    }
+
+    @Test void clockLagConsumesTheRemainingSixtySecondBudget() throws Exception {
+        InternalJwtKeyRing keys = ring("new", material("new", first, true));
+        String token = issue(service(keys, clock), session());
+        Instant expiry = SignedJWT.parse(token).getJWTClaimsSet().getExpirationTime().toInstant();
+        // Real time is expiry + 60 s, while a lagging validator still sees expiry - 1 ns.
+        assertEquals(SID, service(keys, Clock.fixed(expiry.minusNanos(1), ZoneOffset.UTC))
+                .verify(token).sessionId());
+        // A 61 s lag permits acceptance beyond 300 s after near-immediate revocation.
+        Instant revokedAt = NOW.plusNanos(1);
+        Instant realAcceptance = expiry.plusSeconds(61).minusNanos(1);
+        assertTrue(java.time.Duration.between(revokedAt, realAcceptance).compareTo(
+                java.time.Duration.ofSeconds(300)) > 0);
+        assertEquals(SID, service(keys, Clock.fixed(realAcceptance.minusSeconds(61), ZoneOffset.UTC))
+                .verify(token).sessionId());
+        assertThrows(InternalJwtService.InvalidInternalJwtException.class,
+                () -> service(keys, Clock.fixed(expiry, ZoneOffset.UTC)).verify(token));
+        // An advanced validator rejects earlier; a lagging validator rejects a future iat.
+        assertThrows(InternalJwtService.InvalidInternalJwtException.class,
+                () -> service(keys, Clock.fixed(NOW.minusSeconds(1), ZoneOffset.UTC)).verify(token));
+    }
+
+    @Test void eachSessionDeadlineCapsIssuanceNearItsBoundary() throws Exception {
+        InternalJwtService jwt = service();
+        Instant renewableCreated = NOW.minusSeconds(3600).plusSeconds(8);
+        Session renewable = new Session(SID, USER, renewableCreated, renewableCreated,
+                NOW.plusSeconds(8), NOW, NOW.plus(Session.IDLE), renewableCreated.plus(Session.ABSOLUTE), false, 1);
+        Session idle = Session.start(SID, USER, NOW.minusSeconds(1800).plusSeconds(30));
+        Instant absoluteCreated = NOW.minus(Session.ABSOLUTE).plusSeconds(60);
+        Session absolute = new Session(SID, USER, absoluteCreated, absoluteCreated,
+                NOW.plusSeconds(60), NOW, NOW.plus(Session.IDLE), NOW.plusSeconds(60), false, 1);
+        for (var scenario : Map.of("renewable-8", renewable, "idle-30", idle, "absolute-60", absolute).entrySet()) {
+            String token = issue(jwt, scenario.getValue());
+            Instant expiry = SignedJWT.parse(token).getJWTClaimsSet().getExpirationTime().toInstant();
+            assertEquals(scenario.getValue().deadline(), expiry, scenario.getKey());
+        }
+    }
+
     @Test void renewableDeadlineCapsExpiration() {
         Instant created = NOW.minusSeconds(3420);
         Session near = new Session(SID, USER, created, created, NOW.plusSeconds(180), NOW,
@@ -201,6 +257,12 @@ class InternalJwtServiceTest {
         InternalJwtService service = service(ring("new", material("new", first, true)),
                 Clock.fixed(NOW.plusSeconds(100), ZoneOffset.UTC));
         assertThrows(InternalJwtService.InvalidInternalJwtException.class, () -> service.verify(jwt));
+    }
+
+    @Test void rejectsOtherwiseValidTokenLongerThan240Seconds() throws Exception {
+        String jwt = signed(first, JWSAlgorithm.RS256, "new", "https://users.markettec.invalid",
+                "markettec-api", NOW.plusSeconds(241));
+        assertThrows(InternalJwtService.InvalidInternalJwtException.class, () -> service().verify(jwt));
     }
 
     @Test void rotationOverlapsOldPublicAndNewSigningKey() throws Exception {
