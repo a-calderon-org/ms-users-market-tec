@@ -5,6 +5,7 @@ import com.markettec.users.application.session.Session;
 import com.markettec.users.application.session.SessionAuthority;
 import com.markettec.users.application.session.SessionRejectedException;
 import com.markettec.users.application.session.SessionTokens;
+import com.markettec.users.config.SafeJsonLogFormatter;
 import com.markettec.users.domain.model.Email;
 import com.markettec.users.domain.model.ProfileDetails;
 import com.markettec.users.domain.model.User;
@@ -16,6 +17,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
+import static org.junit.jupiter.api.Assertions.*;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import static org.mockito.ArgumentMatchers.*;
@@ -92,7 +98,9 @@ class SessionRefreshControllerTest {
                 .andExpect(status().isUnauthorized());
         mvc.perform(valid().cookie(new Cookie("__Host-mtec-refresh", OLD),
                 new Cookie("__Host-mtec-refresh", OLD))).andExpect(status().isUnauthorized());
-        mvc.perform(valid().header("X-CSRF-Token", "bad")).andExpect(status().isForbidden());
+        mvc.perform(valid().header("X-CSRF-Token", "bad")).andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
+                .andExpect(header().doesNotExist("Set-Cookie"));
         verifyNoInteractions(authority);
     }
 
@@ -102,6 +110,27 @@ class SessionRefreshControllerTest {
         mvc.perform(valid()).andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
                 .andExpect(header().doesNotExist("Set-Cookie"));
+    }
+
+    @Test void malformedCsrfHasUniformErrorAndCorrelatedSecretFreeAudit() throws Exception {
+        var logger = (Logger) LoggerFactory.getLogger(SessionRefreshController.class);
+        var events = new ListAppender<ILoggingEvent>();
+        events.start();
+        logger.addAppender(events);
+        try {
+            mvc.perform(valid().header("X-Correlation-ID", "audit-check-1")
+                    .header("X-CSRF-Token", "malformed-secret"))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.error.code").value("REFRESH_INVALID"))
+                    .andExpect(header().doesNotExist("Set-Cookie"));
+            assertEquals(1, events.list.size());
+            String audit = new SafeJsonLogFormatter().format(events.list.getFirst());
+            assertTrue(audit.contains("\"correlationId\":\"audit-check-1\""));
+            assertTrue(audit.contains("\"outcome\":\"proof_invalid\""));
+            assertFalse(audit.contains(OLD));
+            assertFalse(audit.contains(CSRF));
+            assertFalse(audit.contains("malformed-secret"));
+        } finally { logger.detachAppender(events); events.stop(); }
     }
 
     @Test void preflightRequiresExactOriginPostAndAllowedHeaders() throws Exception {
