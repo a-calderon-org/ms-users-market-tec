@@ -37,7 +37,7 @@ El mínimo transaccional posterior sería una decisión persistida con identific
 
 - Base `main@5b935acf`: [CI posterior al merge #41921127149](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41921127149), job `sql-qa` **success**, incluidos Java, SQL Server, Flyway e inventario. El [CI del HEAD del PR #16 #41913383956](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41913383956) informó 285/285 Java y 56/56 SQL.
 - Antes de cualquier edición, pruebas focalizadas `SessionAuthorityTest`, `SessionRefreshControllerTest`, `SessionLogoutControllerTest`: **51/51 PASS**. Prueba exploratoria R1: **1 fallo esperado** al comprobar que `revoke(String)` no fuese público. Se descartó el cambio de visibilidad al identificar tres llamadores SQL y uno en el worker; código y pruebas volvieron a la base. Repetición final sobre el árbol entregado: **51/51 PASS**.
-- SQL local **no ejecutado**: Docker socket denegado. No se ejecutó un CI nuevo para este informe documental; el CI citado corresponde exactamente al código base.
+- SQL local **no ejecutado**: Docker socket denegado. El CI del Draft PR verifica el árbol documental final; consultar el check del PR para su estado y SHA. El CI de `main` citado arriba corresponde exactamente al código base.
 - `git diff --check`: PASS. No se modificó la política C ni los límites 60/30/8.
 
 ## Riesgos y decisiones pendientes
