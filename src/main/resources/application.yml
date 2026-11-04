@@ -36,6 +36,8 @@ users:
     enabled: ${USERS_GOOGLE_VERIFIER_ENABLED:false}
     login-enabled: ${USERS_GOOGLE_LOGIN_ENABLED:false}
     login-audience: ${USERS_GOOGLE_LOGIN_AUDIENCE:}
+    registration:
+      enabled: ${USERS_GOOGLE_REGISTRATION_ENABLED:false}
     http:
       enabled: ${USERS_GOOGLE_HTTP_ENABLED:false}
       allowed-origins: ${USERS_GOOGLE_HTTP_ALLOWED_ORIGINS:}
