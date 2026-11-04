@@ -210,6 +210,12 @@ class GoogleAuthControllerTest {
                 .content("{}")).andExpect(status().isServiceUnavailable());
         blockedMvc.perform(post("/v1/auth/email/confirm").contentType(MediaType.APPLICATION_JSON)
                 .content("{}")).andExpect(status().isServiceUnavailable());
+        when(login.complete(ATTEMPT_ID, SECRET, "google-proof"))
+                .thenThrow(new SessionRejectedException());
+        blockedMvc.perform(proof("/v1/auth/google")
+                .cookie(new Cookie("__Host-mtec-attempt", SECRET)).header("X-CSRF-Token", csrf()))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(registration, sessions, users);
     }
 
     @Test void preflightAllowsExactOriginAndHeadersOnly() throws Exception {

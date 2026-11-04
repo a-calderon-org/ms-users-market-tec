@@ -1,5 +1,5 @@
 {
-  "normal_count": 279,
+  "normal_count": 283,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -206,6 +206,7 @@
       "sessionRejectionAndMissingVerifierFailClosed"
     ],
     "com.markettec.users.application.session.GoogleLoginServiceTest": [
+      "registrationIntentCannotBecomeLoginAfterRegistrationIsDisabled",
       "blockedAccountCannotCreateSession",
       "concurrentExchangeHasOneWinner",
       "inactiveLinksCannotCreateSession",
@@ -223,6 +224,11 @@
       "googleProofIsPendingEvenWhenEmailVerifiedAndCreatesNoAccountOrCredentials",
       "jwtFailureRollsBackUserLinkAndConsumption",
       "linkRequiresOriginalBrowserAndCanConfirmOnlyOnce"
+    ],
+    "com.markettec.users.config.GoogleRegistrationSafetyConfigTest": [
+      "absentAndExplicitFalseKeepOnlyInertSender",
+      "integrationAloneAllowsTestFlowAndMalformedFlagFailsStartup",
+      "realProfilesRejectEnabledRegistrationWithGoogleHttpAndLoginOff"
     ],
     "com.markettec.users.adapters.in.web.GoogleAuthControllerTest": [
       "canonicalRegistrationAndEmailRequestReturnOnlyPendingAcknowledgments",

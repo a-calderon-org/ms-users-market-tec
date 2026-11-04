@@ -117,6 +117,21 @@ class GoogleLoginServiceTest {
                 () -> service().complete(challenge.attemptId(), challenge.browserSecret(), "valid"));
     }
 
+    @Test void registrationIntentCannotBecomeLoginAfterRegistrationIsDisabled() {
+        link();
+        var challenge = service().begin();
+        var old = intents.get(challenge.attemptId());
+        intents.put(challenge.attemptId(), new GoogleLoginIntent(old.attemptId(), old.nonce(),
+                old.browserHash(), old.createdAt(), old.expiresAt(), false, old.version(),
+                GoogleLoginIntent.Purpose.REGISTRATION));
+        tokenNonce = challenge.nonce();
+        assertThrows(SessionRejectedException.class,
+                () -> service().complete(challenge.attemptId(), challenge.browserSecret(), "valid"));
+        assertTrue(sessions.isEmpty());
+        assertTrue(credentials.isEmpty());
+        assertFalse(intents.get(challenge.attemptId()).consumed());
+    }
+
     @Test void blockedAccountCannotCreateSession() {
         User user = link();
         users.replace(user, user.deactivate());
