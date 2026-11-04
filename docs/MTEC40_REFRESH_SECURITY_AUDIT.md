@@ -42,7 +42,7 @@ Ninguna explotación de refresh replay fue confirmada por las pruebas ejecutadas
 - Inventario: `normal_count=285`, 12 pruebas del verificador Python PASS y los métodos obligatorios aparecen en los reportes Java. La conciliación estricta completa depende de SQL en CI.
 - SQL focalizada: los métodos existentes de `SqlUserStoreIT` cubren carrera y rollback. El intento local falla en `migrateOnlyFreshIsolatedDatabase` antes de migraciones o assertions: Docker detecta `linux/aarch64`, mientras el test exige x86-64 nativo. La EULA del contenedor se autorizó para este intento. **SQL, Flyway y consumo histórico no verificados localmente**.
 - Multiinstancia: no ejecutada en el PR #15. El incremento posterior del [PR #16](https://github.com/a-calderon-org/ms-users-market-tec/pull/16) ejecutó dos JVM independientes sobre SQL Server aislado y verificó carreras, replay y rollback; véase `docs/MTEC40_MULTIINSTANCE_REFRESH_QA.md`. Sigue sin existir prueba HTTP multiinstancia.
-- CI completo del HEAD final: pendiente de publicación de la rama y ejecución del workflow existente.
+- CI completo del PR #15: pendiente al redactar esta auditoría; posteriormente [la ejecución 58 de `main`](https://github.com/a-calderon-org/ms-users-market-tec/actions/runs/41910638813) pasó para `e99ab22`.
 
 ## G. Recomendación
 
