@@ -37,6 +37,12 @@ public final class SqlSchemaValidator {
                 throw new UserPersistenceException("Missing SQL primary key: " + table);
             }
         });
+        Integer refreshIndex = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys.indexes WHERE object_id=OBJECT_ID('dbo.sessions')
+                    AND name='ux_sessions_refresh_hash' AND is_unique=1 AND has_filter=1 AND is_disabled=0
+                """, Integer.class);
+        if (refreshIndex == null || refreshIndex != 1)
+            throw new UserPersistenceException("Missing unique refresh verifier index");
         var foreignKeys = Set.copyOf(jdbc.queryForList("""
                 SELECT name FROM sys.foreign_keys WHERE referenced_object_id=OBJECT_ID('dbo.users')
                     AND is_disabled=0 AND is_not_trusted=0 AND delete_referential_action=0
@@ -62,7 +68,7 @@ public final class SqlSchemaValidator {
         if (!checks.containsAll(Set.of("ck_users_status", "ck_users_version", "ck_profiles_registered",
                 "ck_profiles_updated", "ck_external_identities_provider", "ck_external_identities_link_status",
                 "ck_sessions_version",
-                "ck_sessions_deadlines", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
+                "ck_sessions_deadlines", "ck_sessions_credential_pair", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
                 "ck_recent_attempt_method", "ck_google_login_lifetime", "ck_google_login_version"))) {
             throw new UserPersistenceException("Missing SQL check constraints");
         }
@@ -105,6 +111,8 @@ public final class SqlSchemaValidator {
             require(columns, "sessions." + name, "bigint:8:false");
         }
         require(columns, "sessions.revoked", "bit:1:false");
+        require(columns, "sessions.refresh_hash", "char:64:true");
+        require(columns, "sessions.csrf_hash", "char:64:true");
         for (String name : List.of("attempt_id", "session_id"))
             require(columns, "recent_authentication_attempts." + name, "char:32:false");
         require(columns, "recent_authentication_attempts.user_id", "varchar:40:false");

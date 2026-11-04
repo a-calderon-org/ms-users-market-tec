@@ -1,5 +1,5 @@
 {
-  "normal_count": 223,
+  "normal_count": 239,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -19,6 +19,7 @@
     "errorReportedAfterRealCommitNeverReplaysCommittedWork",
     "failedAggregateUpdateRestoresProfileStatusAndVersion",
     "failedRecentPersistenceRollsBackSensitiveUnit",
+    "failedSqlRefreshRollsBackVerifierAndSessionDeadline",
     "flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum",
     "googleLoginIntentIsAtomicAcrossConcurrentSqlExchangesAndRollback",
     "googleLoginRequiresActivePersistedLinkAndAccount",
@@ -28,6 +29,7 @@
     "linkingAndDeactivationSerializeAcrossConnections",
     "missingIdsAndIdentitiesReturnEmpty",
     "nestedUnitRollsBackToSavepointWithoutLosingOuterWrites",
+    "opaqueRefreshRotatesOnceAcrossConcurrentSqlTransactionsAndRevocation",
     "persistsAndFindsEveryUserAndProfileFieldLosslessly",
     "realDeadlockRollsBackAndRetriesTheCompleteUnit",
     "realSqlProfileFailureIsTranslatedAndRollsBackTheEarlierUserInsert",
@@ -199,6 +201,18 @@
       "accountInsertFailureRollsBackIntent",
       "reusedNonceFromAnotherAttemptIsRejected",
       "simultaneousConsumptionOfOneAttemptHasOneWinner"
+    ],
+    "com.markettec.users.adapters.in.web.GoogleAuthControllerTest": [
+      "loginAndRegistrationAttemptsKeepPurposeAndPreSessionProofSeparate",
+      "originAndShapeRejectBeforeCreatingAttempt",
+      "continuationRejectsMissingOrWrongPreSessionCsrf",
+      "loginMapsInternalResultAndKeepsRefreshOutOfBody(CapturedOutput)",
+      "registrationUsesOnlyRegistrationServiceAndMapsReplay",
+      "preflightAllowsExactOriginAndHeadersOnly",
+      "enabledConstructorRequiresExplicitVerifiedHttpsTopology"
+    ],
+    "com.markettec.users.adapters.in.web.GoogleHttpDisabledTest": [
+      "defaultApplicationDoesNotExposeGoogleAuthRoutes"
     ]
   }
 }

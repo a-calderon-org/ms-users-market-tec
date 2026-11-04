@@ -23,6 +23,11 @@ users:
     enabled: ${USERS_GOOGLE_VERIFIER_ENABLED:false}
     login-enabled: ${USERS_GOOGLE_LOGIN_ENABLED:false}
     login-audience: ${USERS_GOOGLE_LOGIN_AUDIENCE:}
+    http:
+      enabled: ${USERS_GOOGLE_HTTP_ENABLED:false}
+      allowed-origins: ${USERS_GOOGLE_HTTP_ALLOWED_ORIGINS:}
+      public-api-origin: ${USERS_GOOGLE_HTTP_PUBLIC_API_ORIGIN:}
+      same-site-verified: ${USERS_GOOGLE_HTTP_SAME_SITE_VERIFIED:false}
     audiences: ${USERS_GOOGLE_AUDIENCES:}
     issuers: ${USERS_GOOGLE_ISSUERS:https://accounts.google.com,accounts.google.com}
     clock-skew: ${USERS_GOOGLE_CLOCK_SKEW:30s}

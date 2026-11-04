@@ -63,7 +63,9 @@ public final class GoogleRegistrationService {
             throw new SessionRejectedException();
         VerifiedGoogleIdentity verified = transactions.execute(() -> {
             var intent = intents.loadLocked(attemptId).orElseThrow(SessionRejectedException::new);
-            if (intent.purpose() != GoogleLoginIntent.Purpose.REGISTRATION || !intent.validAt(now())
+            if (intent.consumed()) throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
+            if (!now().isBefore(intent.expiresAt())) throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_EXPIRED);
+            if (intent.purpose() != GoogleLoginIntent.Purpose.REGISTRATION
                     || !MessageDigest.isEqual(HexFormat.of().parseHex(intent.browserHash()),
                             HexFormat.of().parseHex(digest(browserSecret))))
                 throw new SessionRejectedException();
@@ -72,7 +74,8 @@ public final class GoogleRegistrationService {
                     || !audience.equals(evidence.audience()))
                 throw new SessionRejectedException();
             var key = new ExternalIdentityKey(evidence.issuer(), evidence.subject());
-            if (identities.findByKey(key).isPresent()) throw new SessionRejectedException();
+            if (identities.findByKey(key).isPresent())
+                throw new SessionRejectedException(SessionRejectedException.Reason.IDENTITY_CONFLICT);
             var id = ids.nextId();
             // A Google assertion supplies an address for the isolated basic profile only.
             // It does not establish TEC affiliation or continuity with any older account.
@@ -85,10 +88,12 @@ public final class GoogleRegistrationService {
             return evidence;
         });
         // A failure here never causes a retry of account creation. Login can use a fresh intent.
-        var authenticated = sessions.createGoogle(verified);
-        var token = jwt.issue(authenticated);
-        var session = sessions.current(authenticated.sessionId()).orElseThrow(SessionRejectedException::new);
-        return new GoogleLoginService.Result(token, session.sessionId(), session.userId().value(), session.deadline());
+        return transactions.execute(() -> {
+            var authenticated = sessions.createGoogle(verified);
+            var issued = sessions.issue(authenticated, jwt);
+            return new GoogleLoginService.Result(issued.jwt(), issued.sessionId(), issued.userId(),
+                    issued.sessionDeadline(), issued.refreshToken(), issued.csrfToken());
+        });
     }
 
     private String randomHex(int size) {

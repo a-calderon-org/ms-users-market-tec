@@ -2,6 +2,7 @@ package com.markettec.users.adapters.out.sql;
 
 import com.markettec.users.application.session.Session;
 import com.markettec.users.application.session.SessionRepository;
+import com.markettec.users.application.session.SessionVerifiers;
 import com.markettec.users.domain.model.UserId;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -42,16 +43,56 @@ public final class SqlSessionRepository implements SessionRepository {
             """, (rs, row) -> read(rs), id).stream().findFirst();
     }
 
+    @Override public Optional<Session> loadByRefreshHashLocked(String hash) {
+        requireTransaction();
+        if (hash == null || !hash.matches("[0-9a-f]{64}")) throw new UserPersistenceException("Invalid verifier");
+        return jdbc.query("""
+            SELECT session_id,user_id,created_ms,renewable_until_ms,last_activity_ms,
+                idle_until_ms,absolute_until_ms,revoked,version
+            FROM dbo.sessions WITH (UPDLOCK,HOLDLOCK) WHERE refresh_hash=?
+            """, (rs, row) -> read(rs), hash).stream().findFirst();
+    }
+
     @Override public void replace(Session before, Session after) {
         requireTransaction();
         if (!before.sessionId().equals(after.sessionId()) || !before.userId().equals(after.userId())
                 || after.version() != before.version() + 1) throw new UserPersistenceException("Invalid session update");
         int changed = jdbc.update("""
             UPDATE dbo.sessions SET renewable_until_ms=?,last_activity_ms=?,idle_until_ms=?,
-                revoked=?,version=? WHERE session_id=? AND version=?
+                revoked=?,version=?,refresh_hash=CASE WHEN ?=1 THEN NULL ELSE refresh_hash END,
+                csrf_hash=CASE WHEN ?=1 THEN NULL ELSE csrf_hash END
+            WHERE session_id=? AND version=?
             """, ms(after.renewableUntil()), ms(after.lastActivityAt()), ms(after.idleUntil()),
-                after.revoked(), after.version(), before.sessionId(), before.version());
+                after.revoked(), after.version(), after.revoked(), after.revoked(),
+                before.sessionId(), before.version());
         if (changed != 1) throw new UserPersistenceException("Concurrent session update");
+    }
+
+    @Override public Optional<SessionVerifiers> verifiers(String id) {
+        requireTransaction();
+        return jdbc.query("SELECT refresh_hash,csrf_hash FROM dbo.sessions WHERE session_id=?",
+                (rs, row) -> rs.getString(1) == null ? null
+                        : new SessionVerifiers(rs.getString(1).trim(), rs.getString(2).trim()), id)
+                .stream().filter(Objects::nonNull).findFirst();
+    }
+
+    @Override public void initializeVerifiers(String id, SessionVerifiers values) {
+        requireTransaction();
+        int changed = jdbc.update("""
+            UPDATE dbo.sessions SET refresh_hash=?,csrf_hash=?
+            WHERE session_id=? AND refresh_hash IS NULL AND csrf_hash IS NULL AND revoked=0
+            """, values.refreshHash(), values.csrfHash(), id);
+        if (changed != 1) throw new UserPersistenceException("Session credentials already initialized");
+    }
+
+    @Override public void rotateVerifiers(String id, SessionVerifiers expected, SessionVerifiers replacement) {
+        requireTransaction();
+        int changed = jdbc.update("""
+            UPDATE dbo.sessions SET refresh_hash=?,csrf_hash=?
+            WHERE session_id=? AND refresh_hash=? AND csrf_hash=? AND revoked=0
+            """, replacement.refreshHash(), replacement.csrfHash(), id,
+                expected.refreshHash(), expected.csrfHash());
+        if (changed != 1) throw new UserPersistenceException("Session credential rotation failed");
     }
 
     private static long ms(Instant value) { return value.toEpochMilli(); }
