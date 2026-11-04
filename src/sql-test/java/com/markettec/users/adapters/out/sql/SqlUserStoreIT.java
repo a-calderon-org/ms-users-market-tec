@@ -821,6 +821,7 @@ class SqlUserStoreIT {
         // A: Both child JVMs connect before the parent releases either attempt.
         try (var first = worker("refresh", issued); var second = worker("refresh", issued)) {
             assertNotEquals(first.pid(), second.pid());
+            System.out.println("MTEC40 independent worker PIDs: " + first.pid() + ", " + second.pid());
             first.release(); second.release();
             String a = first.result(); String b = second.result();
             assertEquals(1, (a.startsWith("ROTATED ") ? 1 : 0) + (b.startsWith("ROTATED ") ? 1 : 0));
@@ -913,15 +914,21 @@ class SqlUserStoreIT {
                     .redirectError(ProcessBuilder.Redirect.DISCARD).start();
             output = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
             input = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8);
-            var bytes = new ByteArrayOutputStream();
-            config.store(bytes, "synthetic isolated SQL QA");
-            input.write(Base64.getEncoder().encodeToString(bytes.toByteArray()) + "\n");
-            input.flush();
-            String ready = readProtocol("READY ", 30);
-            assertNotNull(ready, "Child JVM exited before SQL connection was ready");
-            assertTrue(ready.matches("READY [0-9]+"), "Child JVM did not announce readiness");
-            pid = Long.parseLong(ready.substring(6));
-            assertNotEquals(ProcessHandle.current().pid(), pid);
+            try {
+                var bytes = new ByteArrayOutputStream();
+                config.store(bytes, "synthetic isolated SQL QA");
+                input.write(Base64.getEncoder().encodeToString(bytes.toByteArray()) + "\n");
+                input.flush();
+                String ready = readProtocol("READY ", 30);
+                assertNotNull(ready, "Child JVM exited before SQL connection was ready");
+                assertTrue(ready.matches("READY [0-9]+"), "Child JVM did not announce readiness");
+                pid = Long.parseLong(ready.substring(6));
+                assertNotEquals(ProcessHandle.current().pid(), pid);
+            } catch (Exception | Error failure) {
+                process.destroyForcibly();
+                process.waitFor(10, TimeUnit.SECONDS);
+                throw failure;
+            }
         }
 
         long pid() { return pid; }
