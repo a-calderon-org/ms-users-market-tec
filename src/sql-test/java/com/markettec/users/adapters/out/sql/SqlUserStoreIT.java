@@ -62,7 +62,7 @@ class SqlUserStoreIT {
                     "SELECT CONVERT(varchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))", String.class));
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(7, flyway.migrate().migrationsExecuted);
+            assertEquals(8, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -519,10 +519,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("7", flyway.info().current().getVersion().getVersion());
-        assertEquals(7, flyway.info().applied().length);
+        assertEquals("8", flyway.info().current().getVersion().getVersion());
+        assertEquals(8, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(7, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(8, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -550,6 +550,10 @@ class SqlUserStoreIT {
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='7' AND script='V7__session_credentials.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='8' AND script='V8__session_credential_generations.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
     }
 
@@ -640,6 +644,10 @@ class SqlUserStoreIT {
                 String.class, issued.sessionId());
         assertEquals(64, stored.trim().length());
         assertFalse(stored.contains(issued.refreshToken()));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.session_credential_generations
+                WHERE session_id=? AND generation=0 AND consumed_ms IS NULL
+                """, Integer.class, issued.sessionId()));
         authority.get().requireCsrf(issued.sessionId(), new UserId(issued.userId()), issued.csrfToken());
         var pool = Executors.newFixedThreadPool(2);
         try {
@@ -655,6 +663,25 @@ class SqlUserStoreIT {
             var second = b.get(30, TimeUnit.SECONDS);
             assertEquals(1, (first == null ? 0 : 1) + (second == null ? 0 : 1));
             var winner = first == null ? second : first;
+            assertEquals(2, jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM dbo.session_credential_generations WHERE session_id=?
+                    """, Integer.class, issued.sessionId()));
+            assertEquals(1, jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM dbo.session_credential_generations
+                    WHERE session_id=? AND generation=0 AND consumed_ms IS NOT NULL
+                    """, Integer.class, issued.sessionId()));
+            assertEquals(1L, jdbc.queryForObject("""
+                    SELECT current_credential_generation FROM dbo.sessions WHERE session_id=?
+                    """, Long.class, issued.sessionId()));
+            assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
+                    assertThrows(SessionRejectedException.class, () -> authority.get().refresh(
+                            issued.refreshToken(), issued.csrfToken(), a2 -> "jwt3")).reason());
+            assertEquals(SessionRejectedException.Reason.PROOF_INVALID,
+                    assertThrows(SessionRejectedException.class, () -> authority.get().refresh(
+                            issued.refreshToken(), winner.csrfToken(), a2 -> "jwt3")).reason());
+            assertEquals(SessionRejectedException.Reason.PROOF_INVALID,
+                    assertThrows(SessionRejectedException.class, () -> authority.get().refresh(
+                            "0".repeat(64), issued.csrfToken(), a2 -> "jwt3")).reason());
             assertThrows(SessionRejectedException.class,
                     () -> authority.get().requireCsrf(issued.sessionId(), new UserId(issued.userId()), issued.csrfToken()));
             authority.get().requireCsrf(winner.sessionId(), new UserId(winner.userId()), winner.csrfToken());
@@ -689,6 +716,23 @@ class SqlUserStoreIT {
                 String.class, issued.sessionId()));
         assertEquals(beforeVersion, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
                 Long.class, issued.sessionId()));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.session_credential_generations
+                WHERE session_id=? AND consumed_ms IS NULL
+                """, Integer.class, issued.sessionId()));
+        var repository = new SqlSessionRepository(jdbc);
+        assertThrows(RuntimeException.class, () -> store.execute(() -> {
+            repository.loadLocked(issued.sessionId()).orElseThrow();
+            var current = repository.verifiers(issued.sessionId()).orElseThrow();
+            repository.rotateVerifiers(issued.sessionId(), current, current, now);
+            return null;
+        }));
+        assertEquals(beforeHash, jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
+                String.class, issued.sessionId()));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.session_credential_generations
+                WHERE session_id=? AND generation=0 AND consumed_ms IS NULL
+                """, Integer.class, issued.sessionId()));
         authority.refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2");
     }
 
@@ -1137,6 +1181,44 @@ class SqlUserStoreIT {
         assertEquals(0, restrictedJdbc.queryForObject("SELECT HAS_PERMS_BY_NAME('dbo.users', 'OBJECT', 'DELETE')", Integer.class));
         assertThrows(DataAccessException.class, () -> restrictedJdbc.execute("CREATE TABLE dbo.forbidden_runtime_table(id int)"));
         assertThrows(DataAccessException.class, () -> restrictedJdbc.update("DELETE FROM dbo.users WHERE user_id=?", user.userId().value()));
+    }
+
+    @Test
+    void restrictedRuntimeCanRotateRefreshWithoutDeleteOrDdlPermissions() throws Exception {
+        var runtime = server.restrictedRuntimeSource();
+        var restrictedJdbc = new JdbcTemplate(runtime);
+        var restricted = new SqlUserStore(restrictedJdbc, new DataSourceTransactionManager(runtime));
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        seedGoogle(proof, now);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        var authority = new SessionAuthority(new SqlSessionRepository(restrictedJdbc), restricted, restricted,
+                restricted, Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit);
+        var issued = authority.issue(authority.createAuthenticated(proof), a -> "jwt");
+        var before = authority.current(issued.sessionId()).orElseThrow();
+        var rotated = authority.refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2");
+        assertEquals(before, authority.current(issued.sessionId()).orElseThrow());
+        assertEquals(issued.sessionId(), rotated.sessionId());
+        assertEquals(2, restrictedJdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.session_credential_generations WHERE session_id=?
+                """, Integer.class, issued.sessionId()));
+        assertEquals(1, restrictedJdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.session_credential_generations
+                WHERE session_id=? AND generation=0 AND consumed_ms IS NOT NULL
+                """, Integer.class, issued.sessionId()));
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
+                assertThrows(SessionRejectedException.class, () -> authority.refresh(
+                        issued.refreshToken(), issued.csrfToken(), a -> "jwt3")).reason());
+        assertEquals(0, restrictedJdbc.queryForObject("""
+                SELECT HAS_PERMS_BY_NAME('dbo.session_credential_generations', 'OBJECT', 'DELETE')
+                """, Integer.class));
+        assertEquals(0, restrictedJdbc.queryForObject("SELECT IS_MEMBER('db_owner')", Integer.class));
+        assertEquals(0, restrictedJdbc.queryForObject(
+                "SELECT HAS_PERMS_BY_NAME('dbo', 'SCHEMA', 'ALTER')", Integer.class));
     }
 
     private AnnotationConfigApplicationContext context() {

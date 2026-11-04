@@ -22,9 +22,12 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 import com.markettec.users.domain.model.UserId;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Internal authority. Callers must supply verified evidence and authorize explicit actions. */
 public final class SessionAuthority {
+    private static final Logger LOG = LoggerFactory.getLogger(SessionAuthority.class);
     private final SessionRepository sessions;
     private final ExternalIdentityRepository identities;
     private final UserRepository users;
@@ -152,13 +155,24 @@ public final class SessionAuthority {
         Objects.requireNonNull(jwt);
         if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
         return transactions.execute(() -> {
-            Session before = sessions.loadByRefreshHashLocked(hash(refresh)).orElseThrow(SessionRejectedException::new);
+            String refreshHash = hash(refresh);
+            String csrfHash = hash(csrf);
+            Session before = sessions.loadByRefreshHashLocked(refreshHash).orElse(null);
+            if (before == null) {
+                var consumed = sessions.consumedByRefreshHashLocked(refreshHash);
+                if (consumed.isPresent() && consumed.get().session().validAt(now())
+                        && equal(consumed.get().verifiers().csrfHash(), csrfHash)) {
+                    LOG.warn("Consumed refresh generation reused");
+                    throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
+                }
+                throw new SessionRejectedException();
+            }
             String id = before.sessionId();
             if (!before.validAt(now())) throw new SessionRejectedException();
             SessionVerifiers old = requireCredentials(id, refresh, csrf);
             String nextRefresh = randomHex(32);
             String nextCsrf = randomHex(32);
-            sessions.rotateVerifiers(id, old, new SessionVerifiers(hash(nextRefresh), hash(nextCsrf)));
+            sessions.rotateVerifiers(id, old, new SessionVerifiers(hash(nextRefresh), hash(nextCsrf)), now());
             return tokens(before, jwt.issue(new AuthenticatedSession(id)), nextRefresh, nextCsrf);
         });
     }

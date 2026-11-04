@@ -60,10 +60,11 @@ public final class SqlSessionRepository implements SessionRepository {
         int changed = jdbc.update("""
             UPDATE dbo.sessions SET renewable_until_ms=?,last_activity_ms=?,idle_until_ms=?,
                 revoked=?,version=?,refresh_hash=CASE WHEN ?=1 THEN NULL ELSE refresh_hash END,
-                csrf_hash=CASE WHEN ?=1 THEN NULL ELSE csrf_hash END
+                csrf_hash=CASE WHEN ?=1 THEN NULL ELSE csrf_hash END,
+                current_credential_generation=CASE WHEN ?=1 THEN NULL ELSE current_credential_generation END
             WHERE session_id=? AND version=?
             """, ms(after.renewableUntil()), ms(after.lastActivityAt()), ms(after.idleUntil()),
-                after.revoked(), after.version(), after.revoked(), after.revoked(),
+                after.revoked(), after.version(), after.revoked(), after.revoked(), after.revoked(),
                 before.sessionId(), before.version());
         if (changed != 1) throw new UserPersistenceException("Concurrent session update");
     }
@@ -78,21 +79,62 @@ public final class SqlSessionRepository implements SessionRepository {
 
     @Override public void initializeVerifiers(String id, SessionVerifiers values) {
         requireTransaction();
+        // The caller holds the session row lock. Both statements commit together.
+        jdbc.update("""
+            INSERT INTO dbo.session_credential_generations
+                (session_id,generation,refresh_hash,csrf_hash) VALUES (?,0,?,?)
+            """, id, values.refreshHash(), values.csrfHash());
         int changed = jdbc.update("""
-            UPDATE dbo.sessions SET refresh_hash=?,csrf_hash=?
-            WHERE session_id=? AND refresh_hash IS NULL AND csrf_hash IS NULL AND revoked=0
+            UPDATE dbo.sessions SET refresh_hash=?,csrf_hash=?,current_credential_generation=0
+            WHERE session_id=? AND refresh_hash IS NULL AND csrf_hash IS NULL
+                AND current_credential_generation IS NULL AND revoked=0
             """, values.refreshHash(), values.csrfHash(), id);
         if (changed != 1) throw new UserPersistenceException("Session credentials already initialized");
     }
 
-    @Override public void rotateVerifiers(String id, SessionVerifiers expected, SessionVerifiers replacement) {
+    @Override public void rotateVerifiers(String id, SessionVerifiers expected,
+                                          SessionVerifiers replacement, Instant consumedAt) {
         requireTransaction();
-        int changed = jdbc.update("""
-            UPDATE dbo.sessions SET refresh_hash=?,csrf_hash=?
+        Long generation = jdbc.query("""
+            SELECT current_credential_generation FROM dbo.sessions WITH (UPDLOCK,HOLDLOCK)
             WHERE session_id=? AND refresh_hash=? AND csrf_hash=? AND revoked=0
-            """, replacement.refreshHash(), replacement.csrfHash(), id,
+            """, rs -> rs.next() ? rs.getLong(1) : null,
+                id, expected.refreshHash(), expected.csrfHash());
+        if (generation == null) throw new UserPersistenceException("Session credential rotation failed");
+        int consumed = jdbc.update("""
+            UPDATE dbo.session_credential_generations SET consumed_ms=?
+            WHERE session_id=? AND generation=? AND refresh_hash=? AND csrf_hash=? AND consumed_ms IS NULL
+            """, ms(consumedAt), id, generation, expected.refreshHash(), expected.csrfHash());
+        if (consumed != 1) throw new UserPersistenceException("Session credential rotation failed");
+        jdbc.update("""
+            INSERT INTO dbo.session_credential_generations
+                (session_id,generation,refresh_hash,csrf_hash) VALUES (?,?,?,?)
+            """, id, generation + 1, replacement.refreshHash(), replacement.csrfHash());
+        int changed = jdbc.update("""
+            UPDATE dbo.sessions SET refresh_hash=?,csrf_hash=?,current_credential_generation=?
+            WHERE session_id=? AND current_credential_generation=?
+                AND refresh_hash=? AND csrf_hash=? AND revoked=0
+            """, replacement.refreshHash(), replacement.csrfHash(), generation + 1, id, generation,
                 expected.refreshHash(), expected.csrfHash());
         if (changed != 1) throw new UserPersistenceException("Session credential rotation failed");
+    }
+
+    @Override public Optional<ConsumedCredential> consumedByRefreshHashLocked(String hash) {
+        requireTransaction();
+        if (hash == null || !hash.matches("[0-9a-f]{64}")) throw new UserPersistenceException("Invalid verifier");
+        // Resolve without locking the generation first, then take the same session lock as current refresh.
+        // Re-read under that lock so a concurrent winner is classified after its commit.
+        var ids = jdbc.query("""
+            SELECT session_id FROM dbo.session_credential_generations WHERE refresh_hash=?
+            """, (rs, row) -> rs.getString(1).trim(), hash);
+        if (ids.isEmpty()) return Optional.empty();
+        Session session = loadLocked(ids.getFirst()).orElseThrow(() -> new UserPersistenceException("Missing session"));
+        return jdbc.query("""
+            SELECT csrf_hash FROM dbo.session_credential_generations
+            WHERE session_id=? AND refresh_hash=? AND consumed_ms IS NOT NULL
+            """, (rs, row) -> new ConsumedCredential(session,
+                new SessionVerifiers(hash, rs.getString(1).trim())), session.sessionId(), hash)
+                .stream().findFirst();
     }
 
     private static long ms(Instant value) { return value.toEpochMilli(); }

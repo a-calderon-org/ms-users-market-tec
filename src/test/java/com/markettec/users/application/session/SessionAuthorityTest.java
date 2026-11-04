@@ -33,10 +33,14 @@ class SessionAuthorityTest {
                 synchronized (sessions) {
                     var oldData = new HashMap<>(sessions.data);
                     var oldCredentials = new HashMap<>(sessions.credentials);
+                    var oldConsumed = new HashMap<>(sessions.consumed);
+                    var oldGeneration = new HashMap<>(sessions.generation);
                     try { return users.execute(work); }
                     catch (RuntimeException | Error failure) {
                         sessions.data.clear(); sessions.data.putAll(oldData);
                         sessions.credentials.clear(); sessions.credentials.putAll(oldCredentials);
+                        sessions.consumed.clear(); sessions.consumed.putAll(oldConsumed);
+                        sessions.generation.clear(); sessions.generation.putAll(oldGeneration);
                         throw failure;
                     }
                 }
@@ -212,8 +216,19 @@ class SessionAuthorityTest {
         assertNotEquals(first.refreshToken(), next.refreshToken());
         assertNotEquals(first.csrfToken(), next.csrfToken());
         assertEquals(idleBefore, sessions.loadLocked(first.sessionId()).orElseThrow().idleUntil());
-        assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(first.refreshToken(), first.csrfToken(), a -> "jwt"));
+        assertEquals(1L, sessions.generation.get(first.sessionId()));
+        assertEquals(1, sessions.consumed.size());
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
+                assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(
+                        first.refreshToken(), first.csrfToken(), a -> "jwt")).reason());
+        assertEquals(SessionRejectedException.Reason.PROOF_INVALID,
+                assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(
+                        first.refreshToken(), other.csrfToken(), a -> "jwt")).reason());
+        assertEquals(SessionRejectedException.Reason.PROOF_INVALID,
+                assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(
+                        "0".repeat(64), first.csrfToken(), a -> "jwt")).reason());
         assertThrows(SessionRejectedException.class, () -> authority(allow).refresh(next.refreshToken(), other.csrfToken(), a -> "jwt"));
+        assertEquals(1, sessions.consumed.size());
         assertThrows(SessionRejectedException.class, () -> authority(allow).requireCsrf(first.sessionId(),
                 new UserId(first.userId()), first.csrfToken()));
         authority(allow).requireCsrf(first.sessionId(), new UserId(first.userId()), next.csrfToken());
@@ -254,6 +269,8 @@ class SessionAuthorityTest {
             var a = pool.submit(action); var b = pool.submit(action);
             gate.countDown();
             assertNotEquals(a.get(5, TimeUnit.SECONDS), b.get(5, TimeUnit.SECONDS));
+            assertEquals(1, sessions.consumed.size());
+            assertEquals(1L, sessions.generation.get(first.sessionId()));
         } finally { pool.shutdownNow(); }
     }
 
@@ -264,6 +281,13 @@ class SessionAuthorityTest {
         assertThrows(IllegalStateException.class, () -> authority(allow).refresh(first.refreshToken(), first.csrfToken(),
                 a -> { throw new IllegalStateException("signing failed"); }));
         assertEquals(before, sessions.loadLocked(first.sessionId()).orElseThrow());
+        assertTrue(sessions.consumed.isEmpty());
+        sessions.failAfterConsumption = true;
+        assertThrows(IllegalStateException.class, () -> authority(allow).refresh(
+                first.refreshToken(), first.csrfToken(), a -> "jwt"));
+        assertTrue(sessions.consumed.isEmpty());
+        assertEquals(0L, sessions.generation.get(first.sessionId()));
+        sessions.failAfterConsumption = false;
         authority(allow).refresh(first.refreshToken(), first.csrfToken(), a -> "jwt");
     }
 
@@ -323,6 +347,9 @@ class SessionAuthorityTest {
     private static final class MemorySessions implements SessionRepository {
         private final Map<String, Session> data = new HashMap<>();
         private final Map<String, SessionVerifiers> credentials = new HashMap<>();
+        private final Map<String, ConsumedCredential> consumed = new HashMap<>();
+        private final Map<String, Long> generation = new HashMap<>();
+        volatile boolean failAfterConsumption;
         volatile boolean fail;
         public synchronized void insert(Session s) { check(); data.put(s.sessionId(), s); }
         public synchronized Optional<Session> loadLocked(String id) { check(); return Optional.ofNullable(data.get(id)); }
@@ -340,10 +367,19 @@ class SessionAuthorityTest {
         public synchronized void initializeVerifiers(String id, SessionVerifiers value) {
             check();
             if (credentials.putIfAbsent(id, value) != null) throw new IllegalStateException("duplicate");
+            generation.put(id, 0L);
         }
-        public synchronized void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next) {
+        public synchronized void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next, Instant consumedAt) {
             check();
+            if (!credentials.get(id).equals(old)) throw new IllegalStateException("stale");
+            if (consumed.putIfAbsent(old.refreshHash(), new ConsumedCredential(data.get(id), old)) != null)
+                throw new IllegalStateException("duplicate");
+            if (failAfterConsumption) throw new IllegalStateException("persistence failed");
             if (!credentials.replace(id, old, next)) throw new IllegalStateException("stale");
+            generation.compute(id, (key, number) -> number + 1);
+        }
+        public synchronized Optional<ConsumedCredential> consumedByRefreshHashLocked(String hash) {
+            check(); return Optional.ofNullable(consumed.get(hash));
         }
         private void check() { if (fail) throw new IllegalStateException("store unavailable"); }
     }

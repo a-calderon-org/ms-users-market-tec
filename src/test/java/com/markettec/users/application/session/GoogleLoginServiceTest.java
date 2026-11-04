@@ -67,7 +67,8 @@ class GoogleLoginServiceTest {
         public void initializeVerifiers(String id, SessionVerifiers value) {
             if (credentials.putIfAbsent(id, value) != null) throw new IllegalStateException("duplicate");
         }
-        public void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next) {
+        public Optional<ConsumedCredential> consumedByRefreshHashLocked(String hash) { return Optional.empty(); }
+        public void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next, Instant consumedAt) {
             if (!credentials.replace(id, old, next)) throw new IllegalStateException("stale");
         }
     };

@@ -39,6 +39,7 @@
     "recoversInformationAfterSpringContextRestart",
     "registersAndFindsIdentityAndKeepsOriginalEvidenceOnRetry",
     "rejectsOwnerAndProviderConflictsWithoutReassignment",
+    "restrictedRuntimeCanRotateRefreshWithoutDeleteOrDdlPermissions",
     "restrictedRuntimeCanValidateAndPersistWithoutDdlOrDeletePermissions",
     "retainsCommittedAccountAndIdentityAfterDatabaseEngineRestart",
     "rollsBackAllTablesAfterFailureFollowingAllWrites",
