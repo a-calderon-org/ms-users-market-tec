@@ -8,6 +8,7 @@ import com.markettec.users.application.session.Session;
 import com.markettec.users.application.session.SessionAuthority;
 import com.markettec.users.application.session.SessionRejectedException;
 import com.markettec.users.domain.model.UserId;
+import com.markettec.users.domain.model.Email;
 import com.nimbusds.jwt.SignedJWT;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.Cookie;
@@ -50,6 +51,7 @@ public final class GoogleAuthController {
     private final UserRepository users;
     private final Clock clock;
     private final Set<String> origins;
+    private final boolean registrationEnabled;
 
     @ExceptionHandler(AuthHttpException.class)
     public ResponseEntity<?> authError(AuthHttpException rejected, HttpServletRequest request) {
@@ -74,16 +76,30 @@ public final class GoogleAuthController {
             SessionAuthority sessions, UserRepository users, Clock clock,
             @Value("${users.google.http.allowed-origins:}") String allowedOrigins,
             @Value("${users.google.http.public-api-origin:}") String publicApiOrigin,
-            @Value("${users.google.http.same-site-verified:false}") boolean sameSiteVerified) {
+            @Value("${users.google.http.same-site-verified:false}") boolean sameSiteVerified,
+            @Value("${users.google.registration.enabled:false}") boolean registrationEnabled) {
         this(login, registration, sessions, users, clock,
                 Arrays.stream(allowedOrigins.split(",")).map(String::trim).filter(s -> !s.isEmpty())
-                        .collect(Collectors.toSet()));
+                        .collect(Collectors.toSet()), registrationEnabled);
         if (!sameSiteVerified || !validOrigin(publicApiOrigin))
             throw new IllegalArgumentException("Verified HTTPS same-site browser topology is required");
     }
 
     public GoogleAuthController(GoogleLoginService login, GoogleRegistrationService registration,
+            SessionAuthority sessions, UserRepository users, Clock clock, String allowedOrigins,
+            String publicApiOrigin, boolean sameSiteVerified) {
+        this(login, registration, sessions, users, clock, allowedOrigins, publicApiOrigin,
+                sameSiteVerified, false);
+    }
+
+    public GoogleAuthController(GoogleLoginService login, GoogleRegistrationService registration,
             SessionAuthority sessions, UserRepository users, Clock clock, Set<String> origins) {
+        this(login, registration, sessions, users, clock, origins, false);
+    }
+
+    public GoogleAuthController(GoogleLoginService login, GoogleRegistrationService registration,
+            SessionAuthority sessions, UserRepository users, Clock clock, Set<String> origins,
+            boolean registrationEnabled) {
         this.login = login;
         this.registration = registration;
         this.sessions = sessions;
@@ -92,6 +108,7 @@ public final class GoogleAuthController {
         if (origins == null || origins.isEmpty() || origins.stream().anyMatch(o -> !validOrigin(o)))
             throw new IllegalArgumentException("Explicit HTTPS browser origins are required");
         this.origins = Set.copyOf(origins);
+        this.registrationEnabled = registrationEnabled;
     }
 
     @PostMapping(path = "/v1/auth/attempts", consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -102,6 +119,8 @@ public final class GoogleAuthController {
                 || (body.has("purpose") && !text(body, "purpose", "login") && !text(body, "purpose", "register")))
             throw new AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
         boolean register = text(body, "purpose", "register");
+        if (register && !registrationEnabled)
+            throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
         var challenge = register ? registration.begin() : login.begin();
         headers.add(HttpHeaders.SET_COOKIE, cookie(ATTEMPT, challenge.browserSecret(), 300));
         return ResponseEntity.ok().headers(headers).body(new AttemptResponse(challenge.attemptId(), "google",
@@ -118,7 +137,51 @@ public final class GoogleAuthController {
     @PostMapping(path = "/v1/auth/google/registrations", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> register(@RequestBody JsonNode body, HttpServletRequest request) {
+        if (!registrationEnabled)
+            throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
         return complete(body, request, true);
+    }
+
+    @PostMapping(path = "/v1/auth/email/requests", consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> requestEmail(@RequestBody JsonNode body, HttpServletRequest request) {
+        if (!registrationEnabled)
+            throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
+        var headers = guard(request, true);
+        if (!fields(body, "attemptId", "email") || !body.path("attemptId").isTextual()
+                || !body.path("attemptId").asText().matches("[0-9a-f]{32}")
+                || !body.path("email").isTextual() || body.path("email").asText().length() > 254)
+            throw new AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
+        try {
+            String requestedEmail = new Email(body.path("email").asText()).normalized();
+            registration.requestLink(body.path("attemptId").asText(), browserProof(request), requestedEmail);
+            return ResponseEntity.accepted().headers(headers).body(new EmailAccepted("accepted",
+                    "Si la solicitud es elegible, recibirás un enlace de acceso."));
+        } catch (IllegalArgumentException malformed) {
+            throw new AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
+        } catch (SessionRejectedException rejected) {
+            throw mapped(rejected);
+        }
+    }
+
+    @PostMapping(path = "/v1/auth/email/confirm", consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> confirmEmail(@RequestBody JsonNode body, HttpServletRequest request) {
+        if (!registrationEnabled)
+            throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
+        var headers = guard(request, true);
+        if (!fields(body, "attemptId", "token") || !body.path("attemptId").isTextual()
+                || !body.path("attemptId").asText().matches("[0-9a-f]{32}")
+                || !body.path("token").isTextual() || !body.path("token").asText().matches("[0-9a-f]{64}"))
+            throw new AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
+        try {
+            return authResponse(registration.confirm(body.path("attemptId").asText(),
+                    browserProof(request), body.path("token").asText()), headers);
+        } catch (SessionRejectedException rejected) {
+            throw mapped(rejected);
+        } catch (ParseException impossible) {
+            throw new IllegalStateException("Internal token could not be mapped");
+        }
     }
 
     private ResponseEntity<?> complete(JsonNode body, HttpServletRequest request, boolean register) {
@@ -128,15 +191,29 @@ public final class GoogleAuthController {
                 || !body.path("credential").isTextual() || body.path("credential").asText().isBlank()
                 || body.path("credential").asText().length() > 16_384)
             throw new AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
-        String secret = cookieValue(request, ATTEMPT);
-        String csrf = request.getHeader("X-CSRF-Token");
-        if (secret == null || !secret.matches("[0-9a-f]{64}") || csrf == null
-                || !equal(attemptCsrf(secret), csrf))
-            throw new AuthHttpException(HttpStatus.FORBIDDEN, "CSRF_INVALID");
+        String secret = browserProof(request);
         try {
-            var result = register ? registration.complete(body.get("attemptId").asText(), secret,
-                    body.get("credential").asText()) : login.complete(body.get("attemptId").asText(),
-                    secret, body.get("credential").asText());
+            String id = body.get("attemptId").asText();
+            if (register || (registrationEnabled && registration.isRegistrationAttempt(id))) {
+                if (!registrationEnabled)
+                    throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
+                Instant expiresAt = registration.prepare(id, secret, body.get("credential").asText(),
+                        (String) request.getAttribute(CorrelationIdFilter.ATTRIBUTE_NAME));
+                return ResponseEntity.accepted().headers(headers).body(new MailboxVerificationRequired(
+                        "mailbox-verification-required", id, expiresAt.getEpochSecond()));
+            }
+            var result = login.complete(id, secret, body.get("credential").asText());
+            return authResponse(result, headers);
+        } catch (SessionRejectedException rejected) {
+            throw mapped(rejected);
+        } catch (InvalidGoogleTokenException | UserDomainException rejected) {
+            throw new AuthHttpException(HttpStatus.UNAUTHORIZED, "AUTH_PROOF_INVALID");
+        } catch (ParseException impossible) {
+            throw new IllegalStateException("Internal token could not be mapped");
+        }
+    }
+
+    private ResponseEntity<?> authResponse(GoogleLoginService.Result result, HttpHeaders headers) throws ParseException {
             var session = sessions.current(result.sessionId()).orElseThrow(SessionRejectedException::new);
             var user = users.findById(new UserId(result.userId())).orElseThrow(SessionRejectedException::new);
             user.requireActive();
@@ -155,20 +232,24 @@ public final class GoogleAuthController {
                     deadline, Math.max(session.createdAt().getEpochSecond(), deadline - 300));
             return ResponseEntity.ok().headers(headers).body(new AuthResponse(result.jwt(), "Bearer",
                     expiresAt, authenticatedUser, snapshot, result.csrfToken()));
-        } catch (SessionRejectedException rejected) {
-            throw switch (rejected.reason()) {
+    }
+
+    private static AuthHttpException mapped(SessionRejectedException rejected) {
+            return switch (rejected.reason()) {
                 case ATTEMPT_CONSUMED -> new AuthHttpException(HttpStatus.CONFLICT, "ATTEMPT_CONSUMED");
                 case ATTEMPT_EXPIRED -> new AuthHttpException(HttpStatus.GONE, "ATTEMPT_EXPIRED");
-                case IDENTITY_CONFLICT -> new AuthHttpException(HttpStatus.CONFLICT, "IDENTITY_CONFLICT");
+                case IDENTITY_CONFLICT -> new AuthHttpException(HttpStatus.UNAUTHORIZED, "AUTH_PROOF_INVALID");
                 default -> new AuthHttpException(HttpStatus.UNAUTHORIZED, "AUTH_PROOF_INVALID");
             };
-        } catch (InvalidGoogleTokenException rejected) {
-            throw new AuthHttpException(HttpStatus.UNAUTHORIZED, "AUTH_PROOF_INVALID");
-        } catch (UserDomainException rejected) {
-            throw new AuthHttpException(HttpStatus.UNAUTHORIZED, "AUTH_PROOF_INVALID");
-        } catch (ParseException impossible) {
-            throw new IllegalStateException("Internal token could not be mapped");
-        }
+    }
+
+    private String browserProof(HttpServletRequest request) {
+        String secret = cookieValue(request, ATTEMPT);
+        String csrf = request.getHeader("X-CSRF-Token");
+        if (secret == null || !secret.matches("[0-9a-f]{64}") || csrf == null
+                || !equal(attemptCsrf(secret), csrf))
+            throw new AuthHttpException(HttpStatus.FORBIDDEN, "CSRF_INVALID");
+        return secret;
     }
 
     public ResponseEntity<Void> preflight(HttpServletRequest request) {
@@ -249,6 +330,8 @@ public final class GoogleAuthController {
         @Override public String toString() { return "AttemptResponse[credentials=REDACTED]"; }
     }
     public record AuthenticatedUser(String userId, String email, String nombre, String fotoPerfil) { }
+    public record MailboxVerificationRequired(String status, String attemptId, long expiresAt) { }
+    public record EmailAccepted(String status, String message) { }
     public record SessionSnapshot(String sessionId, String status, long serverTime, long authenticatedAt,
             long renewedAt, long lastActivityAt, long windowExpiresAt, long inactivityExpiresAt,
             long absoluteExpiresAt, long expiresAt, long warningAt) { }

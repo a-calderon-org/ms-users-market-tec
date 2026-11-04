@@ -1,5 +1,4 @@
 package com.markettec.users.application.session;
-import com.markettec.users.application.session.CsrfKeys;
 
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.memory.InMemoryUserStore;
@@ -13,259 +12,177 @@ import java.util.concurrent.*;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.*;
 
 class GoogleRegistrationServiceTest {
     private final Instant start = Instant.parse("2026-11-03T12:00:00Z");
     private final MutableClock clock = new MutableClock(start);
     private final InMemoryUserStore users = new InMemoryUserStore();
     private final Map<String, GoogleLoginIntent> intents = new HashMap<>();
-    private final Map<String, Session> sessionRows = new HashMap<>();
-    private final Map<String, SessionVerifiers> credentials = new HashMap<>();
+    private final Map<String, PendingGoogleRegistration> pending = new HashMap<>();
     private final ExternalIdentityKey key = new ExternalIdentityKey("https://accounts.google.com", "new-google-sub");
-    private final Email email = new Email("someone@tec.ac.cr");
-    private boolean invalidToken, failLink, failSession, failJwt;
-    private String expectedNonce;
+    private Email email = new Email("someone@tec.ac.cr");
+    private String delivered;
+    private boolean deliveryFails, historical;
     private UserId lastGenerated;
+    private final SessionAuthority sessions = mock(SessionAuthority.class);
     private final UserTransactions tx = new UserTransactions() {
         public synchronized <T> T execute(Supplier<T> work) {
-            var oldIntents = new HashMap<>(intents);
-            var oldSessions = new HashMap<>(sessionRows);
-            var oldCredentials = new HashMap<>(credentials);
+            var beforeIntents = new HashMap<>(intents);
+            var beforePending = new HashMap<>(pending);
             try { return users.execute(work); }
-            catch (RuntimeException | Error ex) {
-                intents.clear(); intents.putAll(oldIntents);
-                sessionRows.clear(); sessionRows.putAll(oldSessions);
-                credentials.clear(); credentials.putAll(oldCredentials);
-                throw ex;
+            catch (RuntimeException | Error failure) {
+                intents.clear(); intents.putAll(beforeIntents);
+                pending.clear(); pending.putAll(beforePending);
+                throw failure;
             }
         }
     };
-    private final GoogleLoginIntentRepository attemptRepo = new GoogleLoginIntentRepository() {
-        public void insert(GoogleLoginIntent intent) { intents.put(intent.attemptId(), intent); }
+    private final GoogleLoginIntentRepository intentRepo = new GoogleLoginIntentRepository() {
+        public void insert(GoogleLoginIntent a) { intents.put(a.attemptId(), a); }
         public Optional<GoogleLoginIntent> loadLocked(String id) { return Optional.ofNullable(intents.get(id)); }
         public void replace(GoogleLoginIntent before, GoogleLoginIntent after) {
             if (!intents.replace(before.attemptId(), before, after)) throw new IllegalStateException("race");
         }
     };
-    private final ExternalIdentityRepository links = new ExternalIdentityRepository() {
-        public Optional<ExternalIdentity> findByKey(ExternalIdentityKey key) { return users.findByKey(key); }
-        public ExternalIdentity insertOrGet(ExternalIdentity link) {
-            if (failLink) throw new IllegalStateException("link failed");
-            return users.insertOrGet(link);
+    private final PendingGoogleRegistrationRepository pendingRepo = new PendingGoogleRegistrationRepository() {
+        public void insert(PendingGoogleRegistration p) { pending.put(p.attemptId(), p); }
+        public Optional<PendingGoogleRegistration> loadLocked(String id) { return Optional.ofNullable(pending.get(id)); }
+        public void replace(PendingGoogleRegistration before, PendingGoogleRegistration after) {
+            if (!pending.replace(before.attemptId(), before, after)) throw new IllegalStateException("race");
         }
-        public void replaceStatus(ExternalIdentity before, IdentityLinkStatus after) { users.replaceStatus(before, after); }
-    };
-    private final SessionRepository sessionRepo = new SessionRepository() {
-        public void insert(Session session) {
-            if (failSession) throw new IllegalStateException("session failed");
-            sessionRows.put(session.sessionId(), session);
-        }
-        public Optional<Session> loadLocked(String id) { return Optional.ofNullable(sessionRows.get(id)); }
-        public Optional<Session> loadByRefreshHashLocked(String hash) {
-            return credentials.entrySet().stream().filter(e -> e.getValue().refreshHash().equals(hash))
-                    .map(e -> sessionRows.get(e.getKey())).findFirst();
-        }
-        public void replace(Session before, Session after) { sessionRows.put(before.sessionId(), after); }
-        public Optional<SessionVerifiers> verifiers(String id) { return Optional.ofNullable(credentials.get(id)); }
-        public void initializeVerifiers(String id, SessionVerifiers value) {
-            if (credentials.putIfAbsent(id, value) != null) throw new IllegalStateException("duplicate");
-        }
-        public Optional<ConsumedCredential> consumedByRefreshHashLocked(String hash) { return Optional.empty(); }
-        public Optional<ConsumedCredential> closedByRefreshHashLocked(String hash) { return Optional.empty(); }
-        public void rotateVerifiers(String id, SessionVerifiers old, SessionVerifiers next, Instant consumedAt) {
-            if (!credentials.replace(id, old, next)) throw new IllegalStateException("stale");
-        }
+        public boolean historicalEmailExists(String ignored) { return historical; }
     };
     private final GoogleIdentityVerifier verifier = (token, context) -> {
-        if (invalidToken || !(("valid".equals(token) && Objects.equals(expectedNonce, context.expectedNonce()))
-                || ("nonce:" + context.expectedNonce()).equals(token)))
+        if (!("nonce:" + context.expectedNonce()).equals(token))
             throw new IllegalArgumentException("invalid token");
         return new VerifiedGoogleIdentity(key.issuer(), key.subject(), context.expectedAudience(),
                 start, start.plusSeconds(3600), email);
     };
-    private SessionAuthority authority() {
-        return new SessionAuthority(sessionRepo, links, users, tx, clock, new SecureRandom(),
-                new SessionActionAuthorization() {
-                    public void requireRenewal(Session s) { throw new SessionRejectedException(); }
-                    public void requireAdmissibleActivity(Session s) { throw new SessionRejectedException(); }
-                }, CsrfKeys.fromJson("{\"test\":\"" + java.util.Base64.getEncoder().encodeToString(new byte[32]) + "\"}", "test"));
-    }
     private GoogleRegistrationService service() {
-        return new GoogleRegistrationService(attemptRepo, tx, verifier, users, links,
+        when(sessions.createGoogle(any())).thenReturn(new AuthenticatedSession("a".repeat(32)));
+        doAnswer(call -> new SessionTokens("jwt", "b".repeat(64),
+                "c".repeat(64), "a".repeat(32), lastGenerated.value(), start.plusSeconds(1800)))
+                .when(sessions).issue(any(), any());
+        InstitutionalLinkSender sender = (recipient, attemptId, secret) -> {
+            if (deliveryFails) throw new IllegalStateException("delivery failed");
+            assertEquals(email, recipient);
+            delivered = secret;
+        };
+        return new GoogleRegistrationService(intentRepo, pendingRepo, tx, verifier, users, users,
                 () -> { lastGenerated = new UuidUserIdGenerator().nextId(); return lastGenerated; },
-                authority(), s -> { if (failJwt) throw new IllegalStateException("JWT failed"); return "jwt"; },
-                "client-id", clock, new SecureRandom());
+                sessions, ignored -> "jwt", sender, "client-id", clock, new SecureRandom());
     }
-    private GoogleLoginService.Challenge begin() {
-        var challenge = service().begin(); expectedNonce = challenge.nonce(); return challenge;
-    }
-    private void complete(GoogleLoginService.Challenge c) {
-        service().complete(c.attemptId(), c.browserSecret(), "valid");
-    }
-    private User existing(IdentityLinkStatus status) {
-        User user = User.create(new UuidUserIdGenerator().nextId(), email,
-                new ProfileDetails("old", "Old", "Account"), URI.create("about:blank"), start);
-        users.insert(user);
-        users.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, key, user.userId(), email, status));
-        return user;
+    private GoogleLoginService.Challenge prepared(GoogleRegistrationService service) {
+        var challenge = service.begin();
+        service.prepare(challenge.attemptId(), challenge.browserSecret(), "nonce:" + challenge.nonce());
+        return challenge;
     }
 
-    @Test void newRegistrationCreatesIsolatedBasicAccountAndOneActiveLink() {
-        var c = begin(); var result = service().complete(c.attemptId(), c.browserSecret(), "valid");
-        User user = users.findById(new UserId(result.userId())).orElseThrow();
-        assertNotEquals(key.subject(), result.userId());
-        assertEquals(AccountStatus.ACTIVE, user.status());
-        assertFalse(user.profile().verificado());
-        assertEquals("jwt", result.jwt());
-        assertEquals(64, result.refreshToken().length());
-        assertEquals(64, result.csrfToken().length());
-        assertEquals(1, credentials.size());
-        assertEquals(IdentityLinkStatus.ACTIVE, users.findByKey(key).orElseThrow().status());
-        assertEquals(result.userId(), users.findByKey(key).orElseThrow().userId().value());
+    @Test void googleProofIsPendingEvenWhenEmailVerifiedAndCreatesNoAccountOrCredentials() {
+        var service = service();
+        var c = prepared(service);
         assertTrue(intents.get(c.attemptId()).consumed());
-        assertEquals(1, sessionRows.size());
-        assertThrows(SessionRejectedException.class, () -> complete(c));
-    }
-
-    @Test void invalidTokenNonceBrowserAndExpiryRejectWithoutAccount() {
-        var c = begin();
-        assertThrows(SessionRejectedException.class, () -> service().complete(c.attemptId(), "0".repeat(64), "valid"));
-        expectedNonce = "f".repeat(64);
-        assertThrows(IllegalArgumentException.class, () -> complete(c));
-        expectedNonce = c.nonce(); invalidToken = true;
-        assertThrows(IllegalArgumentException.class, () -> complete(c));
-        invalidToken = false; clock.set(start.plusSeconds(300));
-        assertThrows(SessionRejectedException.class, () -> complete(c));
+        assertEquals(PendingGoogleRegistration.State.PENDING, pending.get(c.attemptId()).state());
+        assertNull(pending.get(c.attemptId()).verifier());
         assertTrue(users.findByKey(key).isEmpty());
-        assertFalse(intents.get(c.attemptId()).consumed());
+        verifyNoInteractions(sessions);
+        assertThrows(SessionRejectedException.class, () ->
+                service.prepare(c.attemptId(), c.browserSecret(), "nonce:" + c.nonce()));
     }
 
-    @Test void loginIntentCannotRegister() {
-        var c = begin();
-        var a = intents.get(c.attemptId());
-        intents.put(c.attemptId(), new GoogleLoginIntent(a.attemptId(), a.nonce(), a.browserHash(),
-                a.createdAt(), a.expiresAt(), false, 0));
-        assertThrows(SessionRejectedException.class, () -> complete(c));
-        assertTrue(users.findByKey(key).isEmpty());
-    }
-
-    @Test void allHistoricalLinkStatesRejectWithoutMutation() {
-        var user = existing(IdentityLinkStatus.ACTIVE);
-        for (var status : IdentityLinkStatus.values()) {
-            users.replaceStatus(users.findByKey(key).orElseThrow(), status);
-            var c = begin();
-            assertThrows(SessionRejectedException.class, () -> complete(c));
-            assertEquals(status, users.findByKey(key).orElseThrow().status());
-            assertEquals(user.userId(), users.findByKey(key).orElseThrow().userId());
-            assertFalse(intents.get(c.attemptId()).consumed());
+    @Test void exactInstitutionalDomainsOnlyAndMismatchedEmailCannotReceiveLink() {
+        for (String address : List.of("a@estudiantec.cr", "a@itcr.ac.cr", "a@tec.ac.cr",
+                "a@x.tec.ac.cr", "a@tec.ac.cr.evil", "a@example.com")) {
+            email = new Email(address);
+            var service = service();
+            var c = prepared(service);
+            boolean eligible = Set.of("a@estudiantec.cr", "a@itcr.ac.cr", "a@tec.ac.cr").contains(address);
+            assertEquals(eligible, pending.containsKey(c.attemptId()));
+            service.requestLink(c.attemptId(), c.browserSecret(), "other@tec.ac.cr");
+            assertNull(delivered);
+            if (eligible) {
+                service.requestLink(c.attemptId(), c.browserSecret(), email.normalized());
+                assertNotNull(delivered);
+                assertNotEquals(delivered, pending.get(c.attemptId()).verifier());
+                delivered = null;
+            }
         }
     }
 
-    @Test void sameEmailNeverTransfersExistingAccount() {
-        User old = User.create(new UuidUserIdGenerator().nextId(), email,
-                new ProfileDetails("old", "Old", "Account"), URI.create("about:blank"), start);
-        users.insert(old);
-        var c = begin(); var result = service().complete(c.attemptId(), c.browserSecret(), "valid");
-        assertNotEquals(old.userId().value(), result.userId());
-        assertEquals(old, users.findById(old.userId()).orElseThrow());
+    @Test void linkRequiresOriginalBrowserAndCanConfirmOnlyOnce() {
+        var service = service();
+        var c = prepared(service);
+        service.requestLink(c.attemptId(), c.browserSecret(), email.normalized());
+        String secret = delivered;
+        assertThrows(SessionRejectedException.class, () -> service.confirm(c.attemptId(), "f".repeat(64), secret));
+        assertThrows(SessionRejectedException.class, () -> service.confirm(c.attemptId(), c.browserSecret(), "e".repeat(64)));
+        assertTrue(users.findByKey(key).isEmpty());
+        var result = service.confirm(c.attemptId(), c.browserSecret(), secret);
+        assertEquals(lastGenerated.value(), result.userId());
+        assertTrue(users.findById(lastGenerated).orElseThrow().profile().verificado());
+        assertEquals(PendingGoogleRegistration.State.CONFIRMED, pending.get(c.attemptId()).state());
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
+                assertThrows(SessionRejectedException.class, () ->
+                        service.confirm(c.attemptId(), c.browserSecret(), secret)).reason());
+        verify(sessions, times(1)).issue(any(), any());
     }
 
-    @Test void linkFailureRollsBackAccountAndAttempt() {
-        var c = begin(); failLink = true;
-        assertThrows(IllegalStateException.class, () -> complete(c));
+    @Test void deliveryFailureRollsBackVerifierAndCannotConfirm() {
+        var service = service();
+        var c = prepared(service);
+        deliveryFails = true;
+        assertThrows(IllegalStateException.class, () ->
+                service.requestLink(c.attemptId(), c.browserSecret(), email.normalized()));
+        assertEquals(PendingGoogleRegistration.State.PENDING, pending.get(c.attemptId()).state());
+        assertTrue(users.findByKey(key).isEmpty());
+    }
+
+    @Test void expiryHistoricalEmailAndExistingGoogleLinkDoNotCreateAccounts() {
+        var service = service();
+        var c = prepared(service);
+        service.requestLink(c.attemptId(), c.browserSecret(), email.normalized());
+        historical = true;
+        assertThrows(SessionRejectedException.class, () -> service.confirm(c.attemptId(), c.browserSecret(), delivered));
+        assertTrue(users.findByKey(key).isEmpty());
+        historical = false;
+        clock.set(start.plusSeconds(300));
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_EXPIRED,
+                assertThrows(SessionRejectedException.class, () ->
+                        service.confirm(c.attemptId(), c.browserSecret(), delivered)).reason());
+    }
+
+    @Test void jwtFailureRollsBackUserLinkAndConsumption() {
+        var service = service();
+        var c = prepared(service);
+        service.requestLink(c.attemptId(), c.browserSecret(), email.normalized());
+        doThrow(new IllegalStateException("JWT failed")).when(sessions).issue(any(), any());
+        assertThrows(IllegalStateException.class, () -> service.confirm(c.attemptId(), c.browserSecret(), delivered));
         assertTrue(users.findByKey(key).isEmpty());
         assertTrue(users.findById(lastGenerated).isEmpty());
-        assertFalse(intents.get(c.attemptId()).consumed());
-        failLink = false; complete(c);
-        assertTrue(intents.get(c.attemptId()).consumed());
+        assertEquals(PendingGoogleRegistration.State.LINK_ISSUED, pending.get(c.attemptId()).state());
     }
 
-    @Test void sessionFailureAfterCommitDoesNotPermitDuplicateRegistration() {
-        var c = begin(); failSession = true;
-        assertThrows(IllegalStateException.class, () -> complete(c));
-        assertTrue(intents.get(c.attemptId()).consumed());
-        assertTrue(users.findByKey(key).isPresent());
-        failSession = false;
-        assertThrows(SessionRejectedException.class, () -> complete(c));
-        assertTrue(sessionRows.isEmpty());
-    }
-
-    @Test void signingFailureAfterRegistrationLeavesNoHalfUsableSession() {
-        var c = begin(); failJwt = true;
-        assertThrows(IllegalStateException.class, () -> complete(c));
-        assertTrue(intents.get(c.attemptId()).consumed());
-        assertTrue(users.findByKey(key).isPresent());
-        assertTrue(sessionRows.isEmpty());
-        assertTrue(credentials.isEmpty());
-        failJwt = false;
-        assertThrows(SessionRejectedException.class, () -> complete(c));
-    }
-
-    @Test void accountInsertFailureRollsBackIntent() {
-        var c = begin();
-        UserRepository broken = new UserRepository() {
-            public Optional<User> findById(UserId id) { return users.findById(id); }
-            public void insert(User user) { throw new IllegalStateException("account failed"); }
-            public void replace(User before, User after) { users.replace(before, after); }
-        };
-        var failing = new GoogleRegistrationService(attemptRepo, tx, verifier, broken, links,
-                new UuidUserIdGenerator(), authority(), s -> "jwt", "client-id", clock, new SecureRandom());
-        assertThrows(IllegalStateException.class,
-                () -> failing.complete(c.attemptId(), c.browserSecret(), "valid"));
-        assertFalse(intents.get(c.attemptId()).consumed());
-        assertTrue(users.findByKey(key).isEmpty());
-    }
-
-    @Test void reusedNonceFromAnotherAttemptIsRejected() {
-        var first = begin(); var second = begin();
-        assertThrows(IllegalArgumentException.class,
-                () -> service().complete(second.attemptId(), second.browserSecret(), "nonce:" + first.nonce()));
-        assertFalse(intents.get(second.attemptId()).consumed());
-        assertTrue(users.findByKey(key).isEmpty());
-    }
-
-    @Test void simultaneousConsumptionOfOneAttemptHasOneWinner() throws Exception {
-        var c = begin();
-        var pool = Executors.newFixedThreadPool(2);
-        try {
-            var gate = new CountDownLatch(1);
-            Callable<Boolean> call = () -> {
-                gate.await();
-                try {
-                    service().complete(c.attemptId(), c.browserSecret(), "nonce:" + c.nonce());
-                    return true;
-                } catch (SessionRejectedException rejected) { return false; }
-            };
-            var one = pool.submit(call); var two = pool.submit(call); gate.countDown();
-            assertEquals(1, (one.get(5, TimeUnit.SECONDS) ? 1 : 0)
-                    + (two.get(5, TimeUnit.SECONDS) ? 1 : 0));
-            assertTrue(intents.get(c.attemptId()).consumed());
-        } finally { pool.shutdownNow(); }
-    }
-
-    @Test void concurrentRegistrationOfSameIdentityHasOneWinner() throws Exception {
-        var a = begin(); var b = begin();
-        var pool = Executors.newFixedThreadPool(2);
-        try {
-            var gate = new CountDownLatch(1);
-            Callable<Boolean> first = () -> { gate.await();
-                try { service().complete(a.attemptId(), a.browserSecret(), "nonce:" + a.nonce()); return true; }
-                catch (SessionRejectedException ignored) { return false; } };
-            Callable<Boolean> second = () -> { gate.await();
-                try { service().complete(b.attemptId(), b.browserSecret(), "nonce:" + b.nonce()); return true; }
-                catch (SessionRejectedException ignored) { return false; } };
-            var x = pool.submit(first); var y = pool.submit(second); gate.countDown();
-            assertEquals(1, (x.get(5, TimeUnit.SECONDS) ? 1 : 0) + (y.get(5, TimeUnit.SECONDS) ? 1 : 0));
-            assertTrue(users.findByKey(key).isPresent());
-        } finally { pool.shutdownNow(); }
+    @Test void anotherIntentCannotUseTheLinkAndReplayCannotReissue() {
+        var service = service();
+        var first = prepared(service);
+        service.requestLink(first.attemptId(), first.browserSecret(), email.normalized());
+        String secret = delivered;
+        var second = prepared(service);
+        assertThrows(SessionRejectedException.class, () ->
+                service.confirm(second.attemptId(), second.browserSecret(), secret));
+        delivered = null;
+        service.requestLink(first.attemptId(), first.browserSecret(), email.normalized());
+        assertNull(delivered);
     }
 
     private static final class MutableClock extends Clock {
-        private volatile Instant instant;
-        MutableClock(Instant instant) { this.instant = instant; }
-        void set(Instant value) { instant = value; }
+        private volatile Instant now;
+        MutableClock(Instant now) { this.now = now; }
+        void set(Instant value) { now = value; }
         public ZoneId getZone() { return ZoneOffset.UTC; }
         public Clock withZone(ZoneId zone) { return this; }
-        public Instant instant() { return instant; }
+        public Instant instant() { return now; }
     }
 }

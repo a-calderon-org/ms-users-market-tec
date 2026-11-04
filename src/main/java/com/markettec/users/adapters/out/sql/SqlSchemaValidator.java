@@ -25,7 +25,8 @@ public final class SqlSchemaValidator {
                 "sessions", List.of("session_id"),
                 "session_credential_generations", List.of("session_id", "generation"),
                 "recent_authentication_attempts", List.of("attempt_id"),
-                "google_login_intents", List.of("attempt_id"));
+                "google_login_intents", List.of("attempt_id"),
+                "pending_google_registrations", List.of("attempt_id"));
         primaryKeys.forEach((table, expected) -> {
             var actual = jdbc.queryForList("""
                     SELECT c.name FROM sys.indexes i
@@ -70,6 +71,14 @@ public final class SqlSchemaValidator {
                 """, Integer.class);
         if (sessionForeignKey == null || sessionForeignKey != 1)
             throw new UserPersistenceException("Missing recent attempt session constraint");
+        Integer pendingForeignKey = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys.foreign_keys WHERE name='fk_pending_google_intent'
+                    AND parent_object_id=OBJECT_ID('dbo.pending_google_registrations')
+                    AND referenced_object_id=OBJECT_ID('dbo.google_login_intents')
+                    AND is_disabled=0 AND is_not_trusted=0 AND delete_referential_action=0
+                """, Integer.class);
+        if (pendingForeignKey == null || pendingForeignKey != 1)
+            throw new UserPersistenceException("Missing pending Google intent constraint");
         Integer generationKeys = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM sys.foreign_keys WHERE name IN
                     ('fk_session_credential_generations_session', 'fk_sessions_current_credential_generation')
@@ -82,14 +91,15 @@ public final class SqlSchemaValidator {
                     AND parent_object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'),
                         OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'),
                         OBJECT_ID('dbo.recent_authentication_attempts'), OBJECT_ID('dbo.google_login_intents'),
-                        OBJECT_ID('dbo.session_credential_generations'))
+                        OBJECT_ID('dbo.session_credential_generations'), OBJECT_ID('dbo.pending_google_registrations'))
                 """, String.class));
         if (!checks.containsAll(Set.of("ck_users_status", "ck_users_version", "ck_profiles_registered",
                 "ck_profiles_updated", "ck_external_identities_provider", "ck_external_identities_link_status",
                 "ck_sessions_version",
                 "ck_sessions_deadlines", "ck_sessions_renewed", "ck_sessions_credential_pair", "ck_sessions_credential_generation_pair",
                 "ck_session_credential_generations_number", "ck_session_credential_generations_consumed", "ck_session_csrf_key_id", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
-                "ck_recent_attempt_method", "ck_google_login_lifetime", "ck_google_login_version"))) {
+                "ck_recent_attempt_method", "ck_google_login_lifetime", "ck_google_login_version",
+                "ck_pending_google_state", "ck_pending_google_version"))) {
             throw new UserPersistenceException("Missing SQL check constraints");
         }
         // Verify names, types, lengths and NOT NULL using engine metadata. No DDL is issued.
@@ -99,7 +109,7 @@ public final class SqlSchemaValidator {
                 WHERE c.object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'),
                     OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'),
                     OBJECT_ID('dbo.recent_authentication_attempts'), OBJECT_ID('dbo.google_login_intents'),
-                        OBJECT_ID('dbo.session_credential_generations'))
+                        OBJECT_ID('dbo.session_credential_generations'), OBJECT_ID('dbo.pending_google_registrations'))
                 """, (rs, row) -> Map.entry(rs.getString("table_name") + "." + rs.getString("name"),
                 rs.getString("type_name") + ":" + rs.getInt("max_length") + ":" + rs.getBoolean("is_nullable")))
                 .stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
@@ -160,6 +170,15 @@ public final class SqlSchemaValidator {
             require(columns, "google_login_intents." + name, "bigint:8:false");
         require(columns, "google_login_intents.consumed", "bit:1:false");
         require(columns, "google_login_intents.purpose", "varchar:16:false");
+        require(columns, "pending_google_registrations.attempt_id", "char:32:false");
+        require(columns, "pending_google_registrations.correlation_id", "varchar:128:false");
+        require(columns, "pending_google_registrations.issuer", "nvarchar:510:false");
+        require(columns, "pending_google_registrations.subject", "nvarchar:510:false");
+        require(columns, "pending_google_registrations.recipient", "varchar:254:false");
+        require(columns, "pending_google_registrations.verifier", "char:64:true");
+        require(columns, "pending_google_registrations.expires_ms", "bigint:8:false");
+        require(columns, "pending_google_registrations.state", "varchar:16:false");
+        require(columns, "pending_google_registrations.version", "bigint:8:false");
         var hashes = jdbc.queryForList("""
                 SELECT name FROM sys.computed_columns WHERE object_id=OBJECT_ID('dbo.external_identities')
                     AND is_persisted=1 AND LOWER(definition) LIKE '%hashbytes%sha2_256%'

@@ -33,6 +33,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static com.markettec.users.domain.model.UserDomainException.Reason.*;
@@ -88,7 +89,7 @@ class SqlUserStoreIT {
             }
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(1, flyway.migrate().migrationsExecuted);
+            assertEquals(2, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -545,10 +546,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("10", flyway.info().current().getVersion().getVersion());
-        assertEquals(10, flyway.info().applied().length);
+        assertEquals("11", flyway.info().current().getVersion().getVersion());
+        assertEquals(11, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(10, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(11, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -584,6 +585,10 @@ class SqlUserStoreIT {
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='9' AND script='V9__session_csrf_key_id.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='11' AND script='V11__pending_google_registrations.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
     }
 
@@ -1133,93 +1138,86 @@ class SqlUserStoreIT {
     }
 
     @Test
-    void googleRegistrationIsAtomicAndUniqueUnderConcurrentSqlRequests() throws Exception {
+    void pendingGoogleRegistrationConfirmsOnceOnRealSqlWithTwoRepositoryInstances() throws Exception {
         Instant now = Instant.parse("2026-11-03T12:00:00Z");
         Clock fixed = Clock.fixed(now, ZoneOffset.UTC);
-        var identity = new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString());
-        var address = new Email("registration@example.invalid");
-        var repo = new SqlGoogleLoginIntentRepository(jdbc);
-        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
-                fixed, new java.security.SecureRandom(), denySessionActions(), csrfKeys());
-        var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
-            if (!token.equals(context.expectedNonce())) throw new SessionRejectedException();
-            return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
-                    identity.issuer(), identity.subject(), context.expectedAudience(), now,
-                    now.plusSeconds(3600), address);
-        };
-        var registration = new GoogleRegistrationService(repo, store, verifier, store, store,
-                new UuidUserIdGenerator(), authority, authenticated -> "jwt",
-                "sql-client", fixed, new java.security.SecureRandom());
-        int usersBefore = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class);
-        var first = registration.begin();
-        var second = registration.begin();
+        var key = new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString());
+        var recipient = new Email("mtec36-" + UUID.randomUUID() + "@tec.ac.cr");
+        var secret = new AtomicReference<String>();
+        int beforeUsers = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class);
+        var firstStore = newStore();
+        var secondStore = newStore();
+        var first = registrationForSql(firstStore, key, recipient, fixed, secret, false);
+        var second = registrationForSql(secondStore, key, recipient, fixed, secret, false);
+        var challenge = first.begin();
+        assertEquals(challenge.expiresAt(), first.prepare(challenge.attemptId(),
+                challenge.browserSecret(), challenge.nonce()));
+        assertEquals(beforeUsers, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE subject=?",
+                Integer.class, key.subject()));
+        first.requestLink(challenge.attemptId(), challenge.browserSecret(), recipient.normalized());
+        assertNotNull(secret.get());
+        assertNotEquals(secret.get(), jdbc.queryForObject(
+                "SELECT verifier FROM dbo.pending_google_registrations WHERE attempt_id=?",
+                String.class, challenge.attemptId()).trim());
         var pool = Executors.newFixedThreadPool(2);
         try {
             var gate = new CountDownLatch(1);
-            var one = pool.submit(() -> {
-                gate.await();
-                try { registration.complete(first.attemptId(), first.browserSecret(), first.nonce()); return true; }
-                catch (SessionRejectedException | UserPersistenceException rejected) { return false; }
-            });
-            var two = pool.submit(() -> {
-                gate.await();
-                try { registration.complete(second.attemptId(), second.browserSecret(), second.nonce()); return true; }
-                catch (SessionRejectedException | UserPersistenceException rejected) { return false; }
-            });
-            gate.countDown();
-            assertEquals(1, (one.get(20, TimeUnit.SECONDS) ? 1 : 0)
-                    + (two.get(20, TimeUnit.SECONDS) ? 1 : 0));
+            Callable<Boolean> a = () -> { gate.await();
+                try { first.confirm(challenge.attemptId(), challenge.browserSecret(), secret.get()); return true; }
+                catch (SessionRejectedException | UserPersistenceException rejected) { return false; } };
+            Callable<Boolean> b = () -> { gate.await();
+                try { second.confirm(challenge.attemptId(), challenge.browserSecret(), secret.get()); return true; }
+                catch (SessionRejectedException | UserPersistenceException rejected) { return false; } };
+            var x = pool.submit(a); var y = pool.submit(b); gate.countDown();
+            assertEquals(1, (x.get(20, TimeUnit.SECONDS) ? 1 : 0) + (y.get(20, TimeUnit.SECONDS) ? 1 : 0));
         } finally { pool.shutdownNow(); }
-        assertEquals(usersBefore + 1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
-        var linked = store.findByKey(identity).orElseThrow();
-        assertEquals(IdentityLinkStatus.ACTIVE, linked.status());
-        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE user_id=?",
-                Integer.class, linked.userId().value()));
-        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.profiles WHERE user_id=?",
-                Integer.class, linked.userId().value()));
-        assertThrows(SessionRejectedException.class,
-                () -> registration.complete(first.attemptId(), first.browserSecret(), first.nonce()));
+        assertEquals(beforeUsers + 1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE subject=?",
+                Integer.class, key.subject()));
+        assertEquals("CONFIRMED", jdbc.queryForObject(
+                "SELECT state FROM dbo.pending_google_registrations WHERE attempt_id=?",
+                String.class, challenge.attemptId()));
     }
 
     @Test
-    void googleRegistrationLinkFailureRollsBackUserProfileAndIntentOnSqlServer() {
+    void pendingRegistrationJwtFailureRollsBackRealSqlWrites() {
         Instant now = Instant.parse("2026-11-03T12:00:00Z");
         Clock fixed = Clock.fixed(now, ZoneOffset.UTC);
-        var identity = new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString());
-        var address = new Email("rollback@example.invalid");
-        var repo = new SqlGoogleLoginIntentRepository(jdbc);
-        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+        var key = new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString());
+        var recipient = new Email("mtec36-" + UUID.randomUUID() + "@itcr.ac.cr");
+        var secret = new AtomicReference<String>();
+        var service = registrationForSql(newStore(), key, recipient, fixed, secret, true);
+        var challenge = service.begin();
+        service.prepare(challenge.attemptId(), challenge.browserSecret(), challenge.nonce());
+        service.requestLink(challenge.attemptId(), challenge.browserSecret(), recipient.normalized());
+        int before = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class);
+        assertThrows(IllegalStateException.class, () ->
+                service.confirm(challenge.attemptId(), challenge.browserSecret(), secret.get()));
+        assertEquals(before, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE subject=?",
+                Integer.class, key.subject()));
+        assertEquals("LINK_ISSUED", jdbc.queryForObject(
+                "SELECT state FROM dbo.pending_google_registrations WHERE attempt_id=?",
+                String.class, challenge.attemptId()));
+    }
+
+    private GoogleRegistrationService registrationForSql(SqlUserStore unit, ExternalIdentityKey key,
+            Email recipient, Clock fixed, AtomicReference<String> linkSecret, boolean failJwt) {
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), unit, unit, unit,
                 fixed, new java.security.SecureRandom(), denySessionActions(), csrfKeys());
         var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
             if (!token.equals(context.expectedNonce())) throw new SessionRejectedException();
             return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
-                    identity.issuer(), identity.subject(), context.expectedAudience(), now,
-                    now.plusSeconds(3600), address);
+                    key.issuer(), key.subject(), context.expectedAudience(), fixed.instant(),
+                    fixed.instant().plusSeconds(3600), recipient);
         };
-        ExternalIdentityRepository failingLinks = new ExternalIdentityRepository() {
-            public java.util.Optional<ExternalIdentity> findByKey(ExternalIdentityKey key) {
-                return store.findByKey(key);
-            }
-            public ExternalIdentity insertOrGet(ExternalIdentity link) {
-                store.insertOrGet(link);
-                throw new IllegalStateException("fail after link write");
-            }
-            public void replaceStatus(ExternalIdentity before, IdentityLinkStatus status) {
-                store.replaceStatus(before, status);
-            }
-        };
-        var registration = new GoogleRegistrationService(repo, store, verifier, store, failingLinks,
-                new UuidUserIdGenerator(), authority, authenticated -> "jwt",
+        return new GoogleRegistrationService(new SqlGoogleLoginIntentRepository(jdbc),
+                new SqlPendingGoogleRegistrationRepository(jdbc), unit, verifier, unit, unit,
+                new UuidUserIdGenerator(), authority,
+                ignored -> { if (failJwt) throw new IllegalStateException("JWT failure"); return "jwt"; },
+                (to, id, token) -> linkSecret.set(token),
                 "sql-client", fixed, new java.security.SecureRandom());
-        int usersBefore = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class);
-        int profilesBefore = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.profiles", Integer.class);
-        var challenge = registration.begin();
-        assertThrows(IllegalStateException.class, () -> registration.complete(
-                challenge.attemptId(), challenge.browserSecret(), challenge.nonce()));
-        assertEquals(usersBefore, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
-        assertEquals(profilesBefore, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.profiles", Integer.class));
-        assertTrue(store.findByKey(identity).isEmpty());
-        assertFalse(store.execute(() -> repo.loadLocked(challenge.attemptId()).orElseThrow().consumed()));
     }
 
     @Test

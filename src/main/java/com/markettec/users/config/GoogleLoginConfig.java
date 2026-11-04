@@ -2,12 +2,14 @@ package com.markettec.users.config;
 
 import com.markettec.users.adapters.out.jwt.InternalJwtService;
 import com.markettec.users.adapters.out.sql.SqlGoogleLoginIntentRepository;
+import com.markettec.users.adapters.out.sql.SqlPendingGoogleRegistrationRepository;
 import com.markettec.users.adapters.out.sql.SqlUserStore;
 import com.markettec.users.application.ports.out.GoogleIdentityVerifier;
 import com.markettec.users.application.session.GoogleLoginService;
 import com.markettec.users.application.session.GoogleRegistrationService;
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.application.session.SessionAuthority;
+import com.markettec.users.application.session.InstitutionalLinkSender;
 import java.security.SecureRandom;
 import java.time.Clock;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,9 +32,11 @@ public class GoogleLoginConfig {
 
     @Bean
     GoogleRegistrationService googleRegistrationService(SqlGoogleLoginIntentRepository intents,
+            SqlPendingGoogleRegistrationRepository pending,
             SqlUserStore store, GoogleIdentityVerifier verifier, SessionAuthority sessions,
-            InternalJwtService jwt, @Value("${users.google.login-audience:}") String audience, Clock clock) {
-        return new GoogleRegistrationService(intents, store, verifier, store, store,
-                new UuidUserIdGenerator(), sessions, jwt, audience, clock, new SecureRandom());
+            InternalJwtService jwt, @Value("${users.google.login-audience:}") String audience, Clock clock,
+            InstitutionalLinkSender simulated) {
+        return new GoogleRegistrationService(intents, pending, store, verifier, store, store,
+                new UuidUserIdGenerator(), sessions, jwt, simulated, audience, clock, new SecureRandom());
     }
 }

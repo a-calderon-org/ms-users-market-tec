@@ -7,6 +7,7 @@ import com.markettec.users.adapters.out.sql.SqlUserStore;
 import com.markettec.users.adapters.out.sql.SqlSessionRepository;
 import com.markettec.users.adapters.out.sql.SqlRecentAttemptRepository;
 import com.markettec.users.adapters.out.sql.SqlGoogleLoginIntentRepository;
+import com.markettec.users.adapters.out.sql.SqlPendingGoogleRegistrationRepository;
 import com.markettec.users.application.session.*;
 import com.markettec.users.application.ports.in.UserUseCases;
 import com.markettec.users.application.ports.out.IdentityLinkAuthorization;
@@ -94,6 +95,11 @@ public class SqlUserConfig {
     @Bean
     SqlGoogleLoginIntentRepository sqlGoogleLoginIntentRepository(DataSource source) {
         return new SqlGoogleLoginIntentRepository(new JdbcTemplate(source));
+    }
+
+    @Bean
+    SqlPendingGoogleRegistrationRepository sqlPendingGoogleRegistrationRepository(DataSource source) {
+        return new SqlPendingGoogleRegistrationRepository(new JdbcTemplate(source));
     }
 
     @Bean
