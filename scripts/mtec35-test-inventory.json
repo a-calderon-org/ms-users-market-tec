@@ -1,5 +1,5 @@
 {
-  "normal_count": 258,
+  "normal_count": 264,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -153,7 +153,9 @@
       "bootstrapRejectsConsumedUnknownExpiredAndRevokedCredentials",
       "bootstrapRejectsHistoricalUnknownRenewal",
       "bootstrapSerializesWithRefreshAndRevocation",
-      "bootstrapRejectsInactiveAccount"
+      "bootstrapRejectsInactiveAccount",
+      "httpRefreshReturnsCoherentSnapshotWithoutChangingSessionState",
+      "httpRefreshRollsBackOnSigningFailureAndRejectsInactiveAccount"
     ],
     "com.markettec.users.adapters.out.jwt.InternalJwtServiceTest": [
       "issuesValidRs256TokenFromTrustedActiveSession",
@@ -232,6 +234,12 @@
       "unknownAndConsumedRefreshHaveSamePrivateError",
       "preflightAllowsOnlyGetAndAllowedHeaders",
       "configurationFailsClosed"
+    ],
+    "com.markettec.users.adapters.in.web.SessionRefreshControllerTest": [
+      "validRotateReturnsAuthResponseAndOnlyCookieCarriesRefresh",
+      "invalidShapeOriginCookieAndCsrfNeverRotate",
+      "unknownOrConsumedRefreshIssuesNoCredential",
+      "preflightRequiresExactOriginPostAndAllowedHeaders"
     ]
   }
 }

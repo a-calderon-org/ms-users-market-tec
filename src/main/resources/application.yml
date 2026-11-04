@@ -23,6 +23,8 @@ users:
     active-kid: ${USERS_INTERNAL_JWT_ACTIVE_KID:}
     keys-json: ${USERS_INTERNAL_JWT_KEYS_JSON:}
   session:
+    refresh:
+      enabled: ${USERS_SESSION_REFRESH_ENABLED:false}
     http:
       enabled: ${USERS_SESSION_HTTP_ENABLED:false}
       allowed-origins: ${USERS_SESSION_HTTP_ALLOWED_ORIGINS:}

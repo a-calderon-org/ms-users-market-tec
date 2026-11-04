@@ -182,6 +182,24 @@ public final class SessionAuthority {
         });
     }
 
+    /** One transaction owns account validation, rotation, signing, and the response snapshot. */
+    public RefreshedSession refreshWithSnapshot(String refresh, String csrf, InternalTokenIssuer jwt) {
+        if (!validSecret(refresh) || !validSecret(csrf)) throw new SessionRejectedException();
+        return transactions.execute(() -> {
+            Session before = sessions.loadByRefreshHashLocked(hash(refresh)).orElseThrow(SessionRejectedException::new);
+            if (!before.validAt(now())) throw new SessionRejectedException();
+            User user = users.findById(before.userId()).orElseThrow(SessionRejectedException::new);
+            user.requireActive();
+            before.requireRenewedAt();
+            SessionTokens result = refresh(refresh, csrf, jwt);
+            return new RefreshedSession(result, before, user, now());
+        });
+    }
+
+    public record RefreshedSession(SessionTokens tokens, Session session, User user, Instant serverTime) {
+        @Override public String toString() { return "RefreshedSession[credentials=REDACTED]"; }
+    }
+
     /** Read-only recovery requiring possession of the current refresh credential. */
     public String recoverCsrf(String refresh) {
         if (!validSecret(refresh)) throw new SessionRejectedException();

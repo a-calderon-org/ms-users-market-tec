@@ -325,6 +325,46 @@ class SessionAuthorityTest {
         authority(allow).refresh(first.refreshToken(), first.csrfToken(), a -> "jwt");
     }
 
+    @Test void httpRefreshReturnsCoherentSnapshotWithoutChangingSessionState() {
+        create();
+        var authority = authority(allow);
+        var first = authority.issue(authority.createAuthenticated(evidence), a -> "initial");
+        var before = sessions.loadLocked(first.sessionId()).orElseThrow();
+        var result = authority.refreshWithSnapshot(first.refreshToken(), first.csrfToken(), a -> "signed");
+        assertEquals(before, result.session());
+        assertEquals(before, sessions.loadLocked(first.sessionId()).orElseThrow());
+        assertEquals(before.userId(), result.user().userId());
+        assertEquals("signed", result.tokens().jwt());
+        assertNotEquals(first.refreshToken(), result.tokens().refreshToken());
+        assertNotEquals(first.csrfToken(), result.tokens().csrfToken());
+        assertThrows(SessionRejectedException.class,
+                () -> authority.refreshWithSnapshot(first.refreshToken(), first.csrfToken(), a -> "bad"));
+        assertEquals(before, sessions.loadLocked(first.sessionId()).orElseThrow());
+        assertEquals("again", authority.refreshWithSnapshot(result.tokens().refreshToken(),
+                result.tokens().csrfToken(), a -> "again").tokens().jwt());
+    }
+
+    @Test void httpRefreshRollsBackOnSigningFailureAndRejectsInactiveAccount() {
+        create();
+        var authority = authority(allow);
+        var first = authority.issue(authority.createAuthenticated(evidence), a -> "initial");
+        assertThrows(IllegalStateException.class,
+                () -> authority.refreshWithSnapshot(first.refreshToken(), first.csrfToken(),
+                        a -> { throw new IllegalStateException("signing failed"); }));
+        assertTrue(sessions.consumed.isEmpty());
+        assertEquals(0L, sessions.generation.get(first.sessionId()));
+        var inactive = users.findById(sessions.loadLocked(first.sessionId()).orElseThrow().userId())
+                .orElseThrow().deactivate();
+        var blockedUsers = org.mockito.Mockito.mock(
+                com.markettec.users.application.ports.out.UserRepository.class);
+        org.mockito.Mockito.when(blockedUsers.findById(inactive.userId())).thenReturn(Optional.of(inactive));
+        var blocked = new SessionAuthority(sessions, users, blockedUsers, users,
+                clock, new SecureRandom(), allow, testKeys());
+        assertThrows(UserDomainException.class,
+                () -> blocked.refreshWithSnapshot(first.refreshToken(), first.csrfToken(), a -> "bad"));
+        assertTrue(sessions.consumed.isEmpty());
+    }
+
     @Test void logoutAndRevocationDestroyCredentialsWithoutRevivingExpiry() {
         create();
         var first = authority(allow).issue(authority(allow).createAuthenticated(evidence), a -> "jwt");
