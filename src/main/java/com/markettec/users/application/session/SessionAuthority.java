@@ -35,10 +35,11 @@ public final class SessionAuthority {
     private final Clock clock;
     private final SecureRandom random;
     private final SessionActionAuthorization authorization;
+    private final CsrfKeys csrfKeys;
 
     public SessionAuthority(SessionRepository sessions, ExternalIdentityRepository identities,
                             UserRepository users, UserTransactions transactions, Clock clock, SecureRandom random,
-                            SessionActionAuthorization authorization) {
+                            SessionActionAuthorization authorization, CsrfKeys csrfKeys) {
         this.sessions = Objects.requireNonNull(sessions);
         this.identities = Objects.requireNonNull(identities);
         this.users = Objects.requireNonNull(users);
@@ -46,6 +47,7 @@ public final class SessionAuthority {
         this.clock = Objects.requireNonNull(clock);
         this.random = Objects.requireNonNull(random);
         this.authorization = Objects.requireNonNull(authorization);
+        this.csrfKeys = Objects.requireNonNull(csrfKeys);
     }
 
     /** Trusted verified identity only; no HTTP adapter exposes this operation. */
@@ -139,8 +141,9 @@ public final class SessionAuthority {
             Session session = sessions.loadLocked(authenticated.sessionId()).orElseThrow(SessionRejectedException::new);
             if (!session.validAt(now())) throw new SessionRejectedException();
             String refresh = randomHex(32);
-            String csrf = randomHex(32);
-            sessions.initializeVerifiers(session.sessionId(), new SessionVerifiers(hash(refresh), hash(csrf)));
+            String refreshHash = hash(refresh);
+            String csrf = csrfKeys.derive(csrfKeys.activeKid(), session.sessionId(), 0, refreshHash);
+            sessions.initializeVerifiers(session.sessionId(), new SessionVerifiers(refreshHash, hash(csrf), 0, csrfKeys.activeKid()));
             return tokens(session, jwt.issue(authenticated), refresh, csrf);
         });
     }
@@ -171,9 +174,26 @@ public final class SessionAuthority {
             if (!before.validAt(now())) throw new SessionRejectedException();
             SessionVerifiers old = requireCredentials(id, refresh, csrf);
             String nextRefresh = randomHex(32);
-            String nextCsrf = randomHex(32);
-            sessions.rotateVerifiers(id, old, new SessionVerifiers(hash(nextRefresh), hash(nextCsrf)), now());
+            String nextHash = hash(nextRefresh);
+            long nextGeneration = old.generation() + 1;
+            String nextCsrf = csrfKeys.derive(csrfKeys.activeKid(), id, nextGeneration, nextHash);
+            sessions.rotateVerifiers(id, old, new SessionVerifiers(nextHash, hash(nextCsrf), nextGeneration, csrfKeys.activeKid()), now());
             return tokens(before, jwt.issue(new AuthenticatedSession(id)), nextRefresh, nextCsrf);
+        });
+    }
+
+    /** Read-only recovery requiring possession of the current refresh credential. */
+    public String recoverCsrf(String refresh) {
+        if (!validSecret(refresh)) throw new SessionRejectedException();
+        return transactions.execute(() -> {
+            String refreshHash = hash(refresh);
+            Session session = sessions.loadByRefreshHashLocked(refreshHash).orElseThrow(SessionRejectedException::new);
+            if (!session.validAt(now())) throw new SessionRejectedException();
+            SessionVerifiers values = sessions.verifiers(session.sessionId()).orElseThrow(SessionRejectedException::new);
+            if (!equal(values.refreshHash(), refreshHash)) throw new SessionRejectedException();
+            String csrf = csrfKeys.derive(values.keyId(), session.sessionId(), values.generation(), refreshHash);
+            if (!equal(values.csrfHash(), hash(csrf))) throw new SessionRejectedException();
+            return csrf;
         });
     }
 

@@ -1,5 +1,5 @@
 {
-  "normal_count": 241,
+  "normal_count": 246,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -47,6 +47,7 @@
     "sensitiveProfileCommitAndRevocationSerializeOnRealSqlServer",
     "sessionCreationRenewalAndExpiryPersistOnRealSqlServer",
     "sessionRevocationAndRenewalSerializeOnRealSqlServer",
+    "sqlCsrfRecoverySurvivesRestartAndRejectsMissingLegacyAndExpiredKeys",
     "staleAggregateCannotOverwriteCommittedChanges",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",

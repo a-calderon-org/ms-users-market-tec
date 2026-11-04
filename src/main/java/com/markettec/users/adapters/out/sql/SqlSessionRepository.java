@@ -71,9 +71,15 @@ public final class SqlSessionRepository implements SessionRepository {
 
     @Override public Optional<SessionVerifiers> verifiers(String id) {
         requireTransaction();
-        return jdbc.query("SELECT refresh_hash,csrf_hash FROM dbo.sessions WHERE session_id=?",
+        return jdbc.query("""
+                SELECT s.refresh_hash,s.csrf_hash,g.generation,g.csrf_key_id FROM dbo.sessions s
+                JOIN dbo.session_credential_generations g ON g.session_id=s.session_id
+                    AND g.generation=s.current_credential_generation AND g.consumed_ms IS NULL
+                WHERE s.session_id=?
+                """,
                 (rs, row) -> rs.getString(1) == null ? null
-                        : new SessionVerifiers(rs.getString(1).trim(), rs.getString(2).trim()), id)
+                        : rs.getString(4) == null ? null
+                        : new SessionVerifiers(rs.getString(1).trim(), rs.getString(2).trim(), rs.getLong(3), rs.getString(4).trim()), id)
                 .stream().filter(Objects::nonNull).findFirst();
     }
 
@@ -82,8 +88,8 @@ public final class SqlSessionRepository implements SessionRepository {
         // The caller holds the session row lock. Both statements commit together.
         jdbc.update("""
             INSERT INTO dbo.session_credential_generations
-                (session_id,generation,refresh_hash,csrf_hash) VALUES (?,0,?,?)
-            """, id, values.refreshHash(), values.csrfHash());
+                (session_id,generation,refresh_hash,csrf_hash,csrf_key_id) VALUES (?,0,?,?,?)
+            """, id, values.refreshHash(), values.csrfHash(), values.keyId());
         int changed = jdbc.update("""
             UPDATE dbo.sessions SET refresh_hash=?,csrf_hash=?,current_credential_generation=0
             WHERE session_id=? AND refresh_hash IS NULL AND csrf_hash IS NULL
@@ -100,7 +106,8 @@ public final class SqlSessionRepository implements SessionRepository {
             WHERE session_id=? AND refresh_hash=? AND csrf_hash=? AND revoked=0
             """, rs -> rs.next() ? rs.getLong(1) : null,
                 id, expected.refreshHash(), expected.csrfHash());
-        if (generation == null) throw new UserPersistenceException("Session credential rotation failed");
+        if (generation == null || generation != expected.generation() || replacement.generation() != generation + 1)
+            throw new UserPersistenceException("Session credential rotation failed");
         int consumed = jdbc.update("""
             UPDATE dbo.session_credential_generations SET consumed_ms=?
             WHERE session_id=? AND generation=? AND refresh_hash=? AND csrf_hash=? AND consumed_ms IS NULL
@@ -108,8 +115,8 @@ public final class SqlSessionRepository implements SessionRepository {
         if (consumed != 1) throw new UserPersistenceException("Session credential rotation failed");
         jdbc.update("""
             INSERT INTO dbo.session_credential_generations
-                (session_id,generation,refresh_hash,csrf_hash) VALUES (?,?,?,?)
-            """, id, generation + 1, replacement.refreshHash(), replacement.csrfHash());
+                (session_id,generation,refresh_hash,csrf_hash,csrf_key_id) VALUES (?,?,?,?,?)
+            """, id, generation + 1, replacement.refreshHash(), replacement.csrfHash(), replacement.keyId());
         int changed = jdbc.update("""
             UPDATE dbo.sessions SET refresh_hash=?,csrf_hash=?,current_credential_generation=?
             WHERE session_id=? AND current_credential_generation=?
@@ -130,10 +137,10 @@ public final class SqlSessionRepository implements SessionRepository {
         if (ids.isEmpty()) return Optional.empty();
         Session session = loadLocked(ids.getFirst()).orElseThrow(() -> new UserPersistenceException("Missing session"));
         return jdbc.query("""
-            SELECT csrf_hash FROM dbo.session_credential_generations
+            SELECT csrf_hash,generation,csrf_key_id FROM dbo.session_credential_generations
             WHERE session_id=? AND refresh_hash=? AND consumed_ms IS NOT NULL
             """, (rs, row) -> new ConsumedCredential(session,
-                new SessionVerifiers(hash, rs.getString(1).trim())), session.sessionId(), hash)
+                new SessionVerifiers(hash, rs.getString(1).trim(), rs.getLong(2), rs.getString(3) == null ? "legacy" : rs.getString(3).trim())), session.sessionId(), hash)
                 .stream().findFirst();
     }
 

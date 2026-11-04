@@ -22,7 +22,8 @@ import static org.mockito.Mockito.*;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "management.server.port=0", "spring.profiles.active=sql-integration",
-        "users.sql.readiness.cache-ttl=0s"})
+        "users.sql.readiness.cache-ttl=0s", "users.csrf.active-kid=sql-test",
+        "users.csrf.keys-json={\"sql-test\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"}"})
 class SqlReadinessHttpTest {
     @Autowired TestRestTemplate http;
     @Autowired ApplicationAvailability availability;

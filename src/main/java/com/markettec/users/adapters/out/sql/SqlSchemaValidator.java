@@ -88,7 +88,7 @@ public final class SqlSchemaValidator {
                 "ck_profiles_updated", "ck_external_identities_provider", "ck_external_identities_link_status",
                 "ck_sessions_version",
                 "ck_sessions_deadlines", "ck_sessions_credential_pair", "ck_sessions_credential_generation_pair",
-                "ck_session_credential_generations_number", "ck_session_credential_generations_consumed", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
+                "ck_session_credential_generations_number", "ck_session_credential_generations_consumed", "ck_session_csrf_key_id", "ck_recent_attempt_lifetime", "ck_recent_attempt_state",
                 "ck_recent_attempt_method", "ck_google_login_lifetime", "ck_google_login_version"))) {
             throw new UserPersistenceException("Missing SQL check constraints");
         }
@@ -139,6 +139,7 @@ public final class SqlSchemaValidator {
         require(columns, "session_credential_generations.generation", "bigint:8:false");
         require(columns, "session_credential_generations.refresh_hash", "char:64:false");
         require(columns, "session_credential_generations.csrf_hash", "char:64:false");
+        require(columns, "session_credential_generations.csrf_key_id", "varchar:32:true");
         require(columns, "session_credential_generations.consumed_ms", "bigint:8:true");
         for (String name : List.of("attempt_id", "session_id"))
             require(columns, "recent_authentication_attempts." + name, "char:32:false");

@@ -111,8 +111,15 @@ public class SqlUserConfig {
     }
 
     @Bean
+    com.markettec.users.application.session.CsrfKeys csrfKeys(
+            @org.springframework.beans.factory.annotation.Value("${users.csrf.keys-json:}") String keys,
+            @org.springframework.beans.factory.annotation.Value("${users.csrf.active-kid:}") String activeKid) {
+        return com.markettec.users.application.session.CsrfKeys.fromJson(keys, activeKid);
+    }
+
+    @Bean
     SessionAuthority sessionAuthority(SqlSessionRepository sessions, SqlUserStore users,
-            SessionActionAuthorization authorization, Clock clock) {
-        return new SessionAuthority(sessions, users, users, users, clock, new SecureRandom(), authorization);
+            SessionActionAuthorization authorization, Clock clock, com.markettec.users.application.session.CsrfKeys csrfKeys) {
+        return new SessionAuthority(sessions, users, users, users, clock, new SecureRandom(), authorization, csrfKeys);
     }
 }

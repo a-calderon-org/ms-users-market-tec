@@ -46,7 +46,11 @@ class SessionAuthorityTest {
                 }
             }
         };
-        return new SessionAuthority(sessions, users, users, atomic, clock, new SecureRandom(), authorization);
+        return new SessionAuthority(sessions, users, users, atomic, clock, new SecureRandom(), authorization, testKeys());
+    }
+
+    private static CsrfKeys testKeys() {
+        return CsrfKeys.fromJson("{\"test\":\"" + Base64.getEncoder().encodeToString(new byte[32]) + "\"}", "test");
     }
 
     private Session create() {
@@ -342,6 +346,49 @@ class SessionAuthorityTest {
         public ZoneId getZone() { return ZoneOffset.UTC; }
         public Clock withZone(ZoneId zone) { return this; }
         public Instant instant() { return instant; }
+    }
+
+    @Test void recoversCurrentCsrfWithoutChangingSessionState() {
+        create();
+        var authority = authority(allow);
+        var first = authority.issue(authority.createAuthenticated(evidence), a -> "jwt");
+        var before = sessions.loadLocked(first.sessionId()).orElseThrow();
+        assertEquals(first.csrfToken(), authority.recoverCsrf(first.refreshToken()));
+        authority.requireCsrf(first.sessionId(), before.userId(), authority.recoverCsrf(first.refreshToken()));
+        assertEquals(before, sessions.loadLocked(first.sessionId()).orElseThrow());
+        var next = authority.refresh(first.refreshToken(), first.csrfToken(), a -> "jwt");
+        assertNotEquals(first.csrfToken(), next.csrfToken());
+        assertThrows(SessionRejectedException.class, () -> authority.recoverCsrf(first.refreshToken()));
+        assertEquals(next.csrfToken(), authority.recoverCsrf(next.refreshToken()));
+        assertEquals(before, sessions.loadLocked(first.sessionId()).orElseThrow());
+        authority.revoke(next.sessionId());
+        assertThrows(SessionRejectedException.class, () -> authority.recoverCsrf(next.refreshToken()));
+    }
+
+    @Test void recoveryRejectsWrongAndExpiredEvidence() {
+        create();
+        var authority = authority(allow);
+        var issued = authority.issue(authority.createAuthenticated(evidence), a -> "jwt");
+        assertThrows(SessionRejectedException.class, () -> authority.recoverCsrf("0".repeat(64)));
+        assertThrows(SessionRejectedException.class, () -> authority.requireCsrf(issued.sessionId(),
+                sessions.loadLocked(issued.sessionId()).orElseThrow().userId(), "0".repeat(64)));
+        clock.set(start.plus(Duration.ofMinutes(30)));
+        assertThrows(SessionRejectedException.class, () -> authority.recoverCsrf(issued.refreshToken()));
+    }
+
+    @Test void rotatedKeyRemainsAvailableOnlyWhileConfigured() {
+        create();
+        var old = authority(allow);
+        var issued = old.issue(old.createAuthenticated(evidence), a -> "jwt");
+        String key = Base64.getEncoder().encodeToString(new byte[32]);
+        String second = Base64.getEncoder().encodeToString(new byte[48]);
+        var both = CsrfKeys.fromJson("{\"test\":\"" + key + "\",\"next\":\"" + second + "\"}", "next");
+        var rotated = new SessionAuthority(sessions, users, users, new UserTransactions() { public <T> T execute(java.util.function.Supplier<T> work) { return users.execute(work); } }, clock,
+                new SecureRandom(), allow, both);
+        assertEquals(issued.csrfToken(), rotated.recoverCsrf(issued.refreshToken()));
+        var next = rotated.refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt");
+        assertEquals(next.csrfToken(), rotated.recoverCsrf(next.refreshToken()));
+        assertThrows(SessionRejectedException.class, () -> old.recoverCsrf(next.refreshToken()));
     }
 
     private static final class MemorySessions implements SessionRepository {

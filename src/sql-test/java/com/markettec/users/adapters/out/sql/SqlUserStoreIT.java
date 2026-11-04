@@ -27,6 +27,7 @@ import java.net.URI;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -41,6 +42,10 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Timeout(180)
 class SqlUserStoreIT {
+    private static final String TEST_KEY = Base64.getEncoder().encodeToString(new byte[32]);
+    private static CsrfKeys csrfKeys() {
+        return CsrfKeys.fromJson("{\"sql-test\":\"" + TEST_KEY + "\"}", "sql-test");
+    }
     private final IsolatedSqlServer server = new IsolatedSqlServer();
     private DataSource source;
     private JdbcTemplate jdbc;
@@ -62,7 +67,7 @@ class SqlUserStoreIT {
                     "SELECT CONVERT(varchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))", String.class));
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(8, flyway.migrate().migrationsExecuted);
+            assertEquals(9, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -519,10 +524,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("8", flyway.info().current().getVersion().getVersion());
-        assertEquals(8, flyway.info().applied().length);
+        assertEquals("9", flyway.info().current().getVersion().getVersion());
+        assertEquals(9, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(8, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(9, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -555,6 +560,10 @@ class SqlUserStoreIT {
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='8' AND script='V8__session_credential_generations.sql' AND success=1 AND checksum IS NOT NULL
                 """, Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.flyway_schema_history
+                WHERE [version]='9' AND script='V9__session_csrf_key_id.sql' AND success=1 AND checksum IS NOT NULL
+                """, Integer.class));
     }
 
     @Test
@@ -569,7 +578,7 @@ class SqlUserStoreIT {
         Instant start = Instant.parse("2026-11-03T12:00:00Z");
         java.util.function.Function<Instant, SessionAuthority> authorityAt = instant -> new SessionAuthority(
                 new SqlSessionRepository(jdbc), store, store, store,
-                Clock.fixed(instant, ZoneOffset.UTC), new java.security.SecureRandom(), permit);
+                Clock.fixed(instant, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
 
         Session renewed = authorityAt.apply(start).create(proof);
         assertEquals(0L, jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
@@ -605,7 +614,7 @@ class SqlUserStoreIT {
         Clock sessionClock = Clock.fixed(Instant.parse("2026-11-03T12:00:00Z"), ZoneOffset.UTC);
         Supplier<SessionAuthority> authority = () -> new SessionAuthority(
                 new SqlSessionRepository(jdbc), store, store, store, sessionClock,
-                new java.security.SecureRandom(), permit);
+                new java.security.SecureRandom(), permit, csrfKeys());
         Session session = authority.get().create(proof);
         assertTrue(authority.get().current(session.sessionId()).isPresent());
         var pool = Executors.newFixedThreadPool(2);
@@ -638,7 +647,7 @@ class SqlUserStoreIT {
             public void requireAdmissibleActivity(Session session) { }
         };
         Supplier<SessionAuthority> authority = () -> new SessionAuthority(new SqlSessionRepository(jdbc),
-                store, store, store, Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit);
+                store, store, store, Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
         var issued = authority.get().issue(authority.get().createAuthenticated(proof), a -> "jwt");
         String stored = jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
                 String.class, issued.sessionId());
@@ -648,6 +657,13 @@ class SqlUserStoreIT {
                 SELECT COUNT(*) FROM dbo.session_credential_generations
                 WHERE session_id=? AND generation=0 AND consumed_ms IS NULL
                 """, Integer.class, issued.sessionId()));
+        assertEquals("sql-test", jdbc.queryForObject("""
+                SELECT csrf_key_id FROM dbo.session_credential_generations
+                WHERE session_id=? AND generation=0
+                """, String.class, issued.sessionId()));
+        var beforeRecovery = authority.get().current(issued.sessionId()).orElseThrow();
+        assertEquals(issued.csrfToken(), authority.get().recoverCsrf(issued.refreshToken()));
+        assertEquals(beforeRecovery, authority.get().current(issued.sessionId()).orElseThrow());
         authority.get().requireCsrf(issued.sessionId(), new UserId(issued.userId()), issued.csrfToken());
         var pool = Executors.newFixedThreadPool(2);
         try {
@@ -673,6 +689,13 @@ class SqlUserStoreIT {
             assertEquals(1L, jdbc.queryForObject("""
                     SELECT current_credential_generation FROM dbo.sessions WHERE session_id=?
                     """, Long.class, issued.sessionId()));
+            assertEquals("sql-test", jdbc.queryForObject("""
+                    SELECT csrf_key_id FROM dbo.session_credential_generations
+                    WHERE session_id=? AND generation=1
+                    """, String.class, issued.sessionId()));
+            assertEquals(winner.csrfToken(), authority.get().recoverCsrf(winner.refreshToken()));
+            assertEquals(beforeRecovery, authority.get().current(issued.sessionId()).orElseThrow());
+            assertThrows(SessionRejectedException.class, () -> authority.get().recoverCsrf(issued.refreshToken()));
             assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
                     assertThrows(SessionRejectedException.class, () -> authority.get().refresh(
                             issued.refreshToken(), issued.csrfToken(), a2 -> "jwt3")).reason());
@@ -704,7 +727,7 @@ class SqlUserStoreIT {
             public void requireAdmissibleActivity(Session session) { }
         };
         var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
-                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit);
+                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
         var issued = authority.issue(authority.createAuthenticated(proof), a -> "jwt");
         String beforeHash = jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
                 String.class, issued.sessionId());
@@ -724,7 +747,10 @@ class SqlUserStoreIT {
         assertThrows(RuntimeException.class, () -> store.execute(() -> {
             repository.loadLocked(issued.sessionId()).orElseThrow();
             var current = repository.verifiers(issued.sessionId()).orElseThrow();
-            repository.rotateVerifiers(issued.sessionId(), current, current, now);
+            // Duplicate refresh verifier fails on insert after the old generation was marked consumed.
+            repository.rotateVerifiers(issued.sessionId(), current,
+                    new SessionVerifiers(current.refreshHash(), current.csrfHash(), current.generation() + 1,
+                            current.keyId()), now);
             return null;
         }));
         assertEquals(beforeHash, jdbc.queryForObject("SELECT refresh_hash FROM dbo.sessions WHERE session_id=?",
@@ -733,7 +759,55 @@ class SqlUserStoreIT {
                 SELECT COUNT(*) FROM dbo.session_credential_generations
                 WHERE session_id=? AND generation=0 AND consumed_ms IS NULL
                 """, Integer.class, issued.sessionId()));
+        assertEquals(issued.csrfToken(), authority.recoverCsrf(issued.refreshToken()));
         authority.refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2");
+    }
+
+    @Test
+    void sqlCsrfRecoverySurvivesRestartAndRejectsMissingLegacyAndExpiredKeys() {
+        var proof = new VerifiedExternalIdentity(IdentityProvider.GOOGLE,
+                new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString()), email);
+        Instant now = Instant.parse("2026-11-03T12:00:00Z");
+        seedGoogle(proof, now);
+        SessionActionAuthorization permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        var repository = new SqlSessionRepository(jdbc);
+        var old = new SessionAuthority(repository, store, store, store, Clock.fixed(now, ZoneOffset.UTC),
+                new java.security.SecureRandom(), permit, csrfKeys());
+        var issued = old.issue(old.createAuthenticated(proof), a -> "jwt");
+        var restarted = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
+                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
+        assertEquals(issued.csrfToken(), restarted.recoverCsrf(issued.refreshToken()));
+
+        String nextKey = Base64.getEncoder().encodeToString(new byte[48]);
+        var nextOnly = CsrfKeys.fromJson("{\"next\":\"" + nextKey + "\"}", "next");
+        var retired = new SessionAuthority(repository, store, store, store, Clock.fixed(now, ZoneOffset.UTC),
+                new java.security.SecureRandom(), permit, nextOnly);
+        assertThrows(SessionRejectedException.class, () -> retired.recoverCsrf(issued.refreshToken()));
+
+        jdbc.update("UPDATE dbo.session_credential_generations SET csrf_key_id=NULL WHERE session_id=? AND generation=0",
+                issued.sessionId());
+        assertThrows(SessionRejectedException.class, () -> restarted.recoverCsrf(issued.refreshToken()));
+        jdbc.update("UPDATE dbo.session_credential_generations SET csrf_key_id='sql-test' WHERE session_id=? AND generation=0",
+                issued.sessionId());
+
+        var both = CsrfKeys.fromJson("{\"sql-test\":\"" + TEST_KEY + "\",\"next\":\"" + nextKey + "\"}", "next");
+        var rotated = new SessionAuthority(repository, store, store, store, Clock.fixed(now, ZoneOffset.UTC),
+                new java.security.SecureRandom(), permit, both);
+        assertEquals(issued.csrfToken(), rotated.recoverCsrf(issued.refreshToken()));
+        var next = rotated.refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2");
+        assertEquals("next", jdbc.queryForObject("""
+                SELECT csrf_key_id FROM dbo.session_credential_generations
+                WHERE session_id=? AND generation=1
+                """, String.class, issued.sessionId()));
+        assertEquals(next.csrfToken(), retired.recoverCsrf(next.refreshToken()));
+        assertThrows(SessionRejectedException.class, () -> old.recoverCsrf(next.refreshToken()));
+        assertThrows(SessionRejectedException.class, () -> rotated.recoverCsrf(issued.refreshToken()));
+        var expired = new SessionAuthority(repository, store, store, store,
+                Clock.fixed(now.plusSeconds(30 * 60), ZoneOffset.UTC), new java.security.SecureRandom(), permit, both);
+        assertThrows(SessionRejectedException.class, () -> expired.recoverCsrf(next.refreshToken()));
     }
 
     @Test
@@ -746,7 +820,7 @@ class SqlUserStoreIT {
         UserService profileService = new UserService(store, store, new UuidUserIdGenerator(), store, deny(), profileClock);
         Supplier<SessionAuthority> authority = () -> new SessionAuthority(
                 new SqlSessionRepository(jdbc), store, store, store, sessionClock,
-                new java.security.SecureRandom(), denySessionActions());
+                new java.security.SecureRandom(), denySessionActions(), csrfKeys());
         Session session = authority.get().create(proof);
         long versionBefore = jdbc.queryForObject("SELECT version FROM dbo.sessions WHERE session_id=?",
                 Long.class, session.sessionId());
@@ -784,7 +858,7 @@ class SqlUserStoreIT {
             Session expired = authority.get().create(proof);
             SessionAuthority later = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
                     Clock.fixed(sessionClock.instant().plusSeconds(30 * 60), ZoneOffset.UTC),
-                    new java.security.SecureRandom(), denySessionActions());
+                    new java.security.SecureRandom(), denySessionActions(), csrfKeys());
             assertThrows(SessionRejectedException.class, () -> later.withCurrentSession(
                     expired.sessionId(), owner.userId(), () -> service().deactivateUser(owner::userId, owner.userId())));
             assertEquals(AccountStatus.ACTIVE, store.findById(owner.userId()).orElseThrow().status());
@@ -816,7 +890,7 @@ class SqlUserStoreIT {
         });
         var repo = new SqlGoogleLoginIntentRepository(jdbc);
         var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
-                fixed, new java.security.SecureRandom(), denySessionActions());
+                fixed, new java.security.SecureRandom(), denySessionActions(), csrfKeys());
         var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
             if (!token.equals(context.expectedNonce())) throw new SessionRejectedException();
             return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
@@ -862,7 +936,7 @@ class SqlUserStoreIT {
         var address = new Email("registration@example.invalid");
         var repo = new SqlGoogleLoginIntentRepository(jdbc);
         var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
-                fixed, new java.security.SecureRandom(), denySessionActions());
+                fixed, new java.security.SecureRandom(), denySessionActions(), csrfKeys());
         var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
             if (!token.equals(context.expectedNonce())) throw new SessionRejectedException();
             return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
@@ -911,7 +985,7 @@ class SqlUserStoreIT {
         var address = new Email("rollback@example.invalid");
         var repo = new SqlGoogleLoginIntentRepository(jdbc);
         var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
-                fixed, new java.security.SecureRandom(), denySessionActions());
+                fixed, new java.security.SecureRandom(), denySessionActions(), csrfKeys());
         var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
             if (!token.equals(context.expectedNonce())) throw new SessionRejectedException();
             return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
@@ -956,7 +1030,7 @@ class SqlUserStoreIT {
             return null;
         });
         var authority = new SessionAuthority(new SqlSessionRepository(jdbc), store, store, store,
-                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), denySessionActions());
+                Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), denySessionActions(), csrfKeys());
         var proof = new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
                 key.issuer(), key.subject(), "sql-client", now, now.plusSeconds(3600));
         assertNotNull(authority.createGoogle(proof));
@@ -1001,7 +1075,7 @@ class SqlUserStoreIT {
             return null;
         });
         var authority = new SessionAuthority(sessionRepo, store, store, store, fixed,
-                new java.security.SecureRandom(), denySessionActions());
+                new java.security.SecureRandom(), denySessionActions(), csrfKeys());
         return new RecentFixture(owner, session, attempt, authority,
                 new RecentAuthenticationAuthority(authority, attemptRepo, fixed, new java.security.SecureRandom()));
     }
@@ -1197,7 +1271,7 @@ class SqlUserStoreIT {
             public void requireAdmissibleActivity(Session session) { }
         };
         var authority = new SessionAuthority(new SqlSessionRepository(restrictedJdbc), restricted, restricted,
-                restricted, Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit);
+                restricted, Clock.fixed(now, ZoneOffset.UTC), new java.security.SecureRandom(), permit, csrfKeys());
         var issued = authority.issue(authority.createAuthenticated(proof), a -> "jwt");
         var before = authority.current(issued.sessionId()).orElseThrow();
         var rotated = authority.refresh(issued.refreshToken(), issued.csrfToken(), a -> "jwt2");
@@ -1225,7 +1299,8 @@ class SqlUserStoreIT {
         var context = new AnnotationConfigApplicationContext();
         context.getEnvironment().setActiveProfiles("sql-integration");
         context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("isolated", Map.of(
-                "users.sql.database", IsolatedSqlServer.DATABASE, "spring.application.name", "ms-users")));
+                "users.sql.database", IsolatedSqlServer.DATABASE, "spring.application.name", "ms-users",
+                "users.csrf.active-kid", "sql-test", "users.csrf.keys-json", "{\"sql-test\":\"" + TEST_KEY + "\"}")));
         context.registerBean(DataSource.class, () -> source);
         context.register(ApplicationConfig.class, SqlUserConfig.class);
         context.refresh();

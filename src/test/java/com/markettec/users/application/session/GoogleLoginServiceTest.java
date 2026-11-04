@@ -1,4 +1,5 @@
 package com.markettec.users.application.session;
+import com.markettec.users.application.session.CsrfKeys;
 
 import com.markettec.users.adapters.out.memory.InMemoryUserStore;
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
@@ -83,7 +84,7 @@ class GoogleLoginServiceTest {
                 new SessionActionAuthorization() {
                     public void requireRenewal(Session s) { throw new SessionRejectedException(); }
                     public void requireAdmissibleActivity(Session s) { throw new SessionRejectedException(); }
-                });
+                }, CsrfKeys.fromJson("{\"test\":\"" + java.util.Base64.getEncoder().encodeToString(new byte[32]) + "\"}", "test"));
         return new GoogleLoginService(intentRepo, tx, verifier, authority,
                 authenticated -> { if (failJwt) throw new IllegalStateException("signing failed"); return "internal-jwt"; },
                 "client-id", clock, new SecureRandom());
