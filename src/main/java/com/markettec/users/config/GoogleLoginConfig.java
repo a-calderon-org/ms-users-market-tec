@@ -9,7 +9,6 @@ import com.markettec.users.application.session.GoogleLoginService;
 import com.markettec.users.application.session.GoogleRegistrationService;
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.application.session.SessionAuthority;
-import com.markettec.users.application.session.InstitutionalLinkSender;
 import java.security.SecureRandom;
 import java.time.Clock;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,9 +33,8 @@ public class GoogleLoginConfig {
     GoogleRegistrationService googleRegistrationService(SqlGoogleLoginIntentRepository intents,
             SqlPendingGoogleRegistrationRepository pending,
             SqlUserStore store, GoogleIdentityVerifier verifier, SessionAuthority sessions,
-            InternalJwtService jwt, @Value("${users.google.login-audience:}") String audience, Clock clock,
-            InstitutionalLinkSender simulated) {
+            InternalJwtService jwt, @Value("${users.google.login-audience:}") String audience, Clock clock) {
         return new GoogleRegistrationService(intents, pending, store, verifier, store, store,
-                new UuidUserIdGenerator(), sessions, jwt, simulated, audience, clock, new SecureRandom());
+                new UuidUserIdGenerator(), sessions, jwt, audience, clock, new SecureRandom());
     }
 }

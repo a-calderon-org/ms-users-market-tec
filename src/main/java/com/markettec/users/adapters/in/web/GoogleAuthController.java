@@ -142,46 +142,17 @@ public final class GoogleAuthController {
         return complete(body, request, true);
     }
 
+    /** Independent email authentication awaits verified delivery and persistence. */
     @PostMapping(path = "/v1/auth/email/requests", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> requestEmail(@RequestBody JsonNode body, HttpServletRequest request) {
-        if (!registrationEnabled)
-            throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
-        var headers = guard(request, true);
-        if (!fields(body, "attemptId", "email") || !body.path("attemptId").isTextual()
-                || !body.path("attemptId").asText().matches("[0-9a-f]{32}")
-                || !body.path("email").isTextual() || body.path("email").asText().length() > 254)
-            throw new AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
-        try {
-            String requestedEmail = new Email(body.path("email").asText()).normalized();
-            registration.requestLink(body.path("attemptId").asText(), browserProof(request), requestedEmail);
-            return ResponseEntity.accepted().headers(headers).body(new EmailAccepted("accepted",
-                    "Si la solicitud es elegible, recibirás un enlace de acceso."));
-        } catch (IllegalArgumentException malformed) {
-            throw new AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
-        } catch (SessionRejectedException rejected) {
-            throw mapped(rejected);
-        }
+        throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
     }
 
     @PostMapping(path = "/v1/auth/email/confirm", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> confirmEmail(@RequestBody JsonNode body, HttpServletRequest request) {
-        if (!registrationEnabled)
-            throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
-        var headers = guard(request, true);
-        if (!fields(body, "attemptId", "token") || !body.path("attemptId").isTextual()
-                || !body.path("attemptId").asText().matches("[0-9a-f]{32}")
-                || !body.path("token").isTextual() || !body.path("token").asText().matches("[0-9a-f]{64}"))
-            throw new AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
-        try {
-            return authResponse(registration.confirm(body.path("attemptId").asText(),
-                    browserProof(request), body.path("token").asText()), headers);
-        } catch (SessionRejectedException rejected) {
-            throw mapped(rejected);
-        } catch (ParseException impossible) {
-            throw new IllegalStateException("Internal token could not be mapped");
-        }
+        throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
     }
 
     private ResponseEntity<?> complete(JsonNode body, HttpServletRequest request, boolean register) {
@@ -197,10 +168,7 @@ public final class GoogleAuthController {
             if (register || (registrationEnabled && registration.isRegistrationAttempt(id))) {
                 if (!registrationEnabled)
                     throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
-                Instant expiresAt = registration.prepare(id, secret, body.get("credential").asText(),
-                        (String) request.getAttribute(CorrelationIdFilter.ATTRIBUTE_NAME));
-                return ResponseEntity.accepted().headers(headers).body(new MailboxVerificationRequired(
-                        "mailbox-verification-required", id, expiresAt.getEpochSecond()));
+                return authResponse(registration.complete(id, secret, body.get("credential").asText()), headers);
             }
             var result = login.complete(id, secret, body.get("credential").asText());
             return authResponse(result, headers);
@@ -330,8 +298,6 @@ public final class GoogleAuthController {
         @Override public String toString() { return "AttemptResponse[credentials=REDACTED]"; }
     }
     public record AuthenticatedUser(String userId, String email, String nombre, String fotoPerfil) { }
-    public record MailboxVerificationRequired(String status, String attemptId, long expiresAt) { }
-    public record EmailAccepted(String status, String message) { }
     public record SessionSnapshot(String sessionId, String status, long serverTime, long authenticatedAt,
             long renewedAt, long lastActivityAt, long windowExpiresAt, long inactivityExpiresAt,
             long absoluteExpiresAt, long expiresAt, long warningAt) { }

@@ -9,7 +9,7 @@ import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 
-/** A Google assertion only creates pending evidence; the mailbox POST authorizes account creation. */
+/** A verified Google assertion creates the account and session in one transaction. */
 public final class GoogleRegistrationService {
     private final GoogleLoginIntentRepository intents;
     private final PendingGoogleRegistrationRepository pending;
@@ -20,7 +20,6 @@ public final class GoogleRegistrationService {
     private final UserIdGenerator ids;
     private final SessionAuthority sessions;
     private final InternalTokenIssuer jwt;
-    private final InstitutionalLinkSender mail;
     private final String audience;
     private final Clock clock;
     private final SecureRandom random;
@@ -28,7 +27,7 @@ public final class GoogleRegistrationService {
     public GoogleRegistrationService(GoogleLoginIntentRepository intents, PendingGoogleRegistrationRepository pending,
             UserTransactions tx, GoogleIdentityVerifier verifier, UserRepository users,
             ExternalIdentityRepository identities, UserIdGenerator ids, SessionAuthority sessions,
-            InternalTokenIssuer jwt, InstitutionalLinkSender mail, String audience, Clock clock, SecureRandom random) {
+            InternalTokenIssuer jwt, String audience, Clock clock, SecureRandom random) {
         this.intents = Objects.requireNonNull(intents);
         this.pending = Objects.requireNonNull(pending);
         this.tx = Objects.requireNonNull(tx);
@@ -38,7 +37,6 @@ public final class GoogleRegistrationService {
         this.ids = Objects.requireNonNull(ids);
         this.sessions = Objects.requireNonNull(sessions);
         this.jwt = Objects.requireNonNull(jwt);
-        this.mail = Objects.requireNonNull(mail);
         if (audience == null || audience.isBlank() || audience.length() > 256)
             throw new IllegalArgumentException("Google audience is required");
         this.audience = audience;
@@ -60,79 +58,29 @@ public final class GoogleRegistrationService {
                 .map(i -> i.purpose() == GoogleLoginIntent.Purpose.REGISTRATION).orElse(false));
     }
 
-    /** Consumes the Google nonce. Ineligible and already linked identities get the same 202. */
-    public Instant prepare(String id, String browser, String token) {
-        return prepare(id, browser, token, UUID.randomUUID().toString());
-    }
-
-    public Instant prepare(String id, String browser, String token, String correlationId) {
+    /** Account, exact identity link, consumed attempt and session commit together. */
+    public GoogleLoginService.Result complete(String id, String browser, String token) {
         requireInputs(id, browser);
-        if (correlationId == null || !correlationId.matches("[A-Za-z0-9._-]{1,128}"))
+        if (token == null || token.isBlank() || token.length() > 16_384)
             throw new SessionRejectedException();
-        if (token == null || token.isBlank() || token.length() > 16_384) throw new SessionRejectedException();
         return tx.execute(() -> {
-            var intent = intent(id, browser, false);
+            var intent = intent(id, browser);
             var proof = verifier.verify(token, new GoogleVerificationContext(audience, intent.nonce()));
-            if (!intent.validAt(now()) || proof == null || !audience.equals(proof.audience()))
+            if (!intent.validAt(now()) || proof == null || !audience.equals(proof.audience())
+                    || !InstitutionalEmailProof.eligible(proof.verifiedEmail()))
                 throw new SessionRejectedException();
-            intents.replace(intent, intent.consume());
-            Email email = proof.verifiedEmail();
-            if (InstitutionalEmailProof.eligible(email)) {
-                var key = new ExternalIdentityKey(proof.issuer(), proof.subject());
-                if (identities.findByKey(key).isEmpty())
-                    pending.insert(new PendingGoogleRegistration(id, correlationId, key.issuer(), key.subject(), email,
-                            null, intent.expiresAt(), PendingGoogleRegistration.State.PENDING, 0));
-            }
-            return intent.expiresAt();
-        });
-    }
-
-    /** The caller controls neither the recipient nor the link secret. Reissue awaits an abuse policy. */
-    public void requestLink(String id, String browser, String requestedEmail) {
-        requireInputs(id, browser);
-        tx.execute(() -> {
-            intent(id, browser, true);
-            var state = pending.loadLocked(id).orElse(null);
-            if (state == null || state.state() != PendingGoogleRegistration.State.PENDING
-                    || requestedEmail == null || !state.recipient().normalized().equals(requestedEmail))
-                return null;
-            String secret = randomHex(32);
-            pending.replace(state, state.withVerifier(linkDigest(state, secret)));
-            mail.send(state.recipient(), id, secret);
-            if (!now().isBefore(state.expiresAt()))
-                throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_EXPIRED);
-            return null;
-        });
-    }
-
-    /** The outer transaction includes link consumption, user, identity, session, refresh and JWT. */
-    public GoogleLoginService.Result confirm(String id, String browser, String token) {
-        requireInputs(id, browser);
-        if (token == null || !token.matches("[0-9a-f]{64}")) throw new SessionRejectedException();
-        return tx.execute(() -> {
-            var intent = intent(id, browser, true);
-            var state = pending.loadLocked(id).orElseThrow(SessionRejectedException::new);
-            if (state.state() == PendingGoogleRegistration.State.CONFIRMED)
-                throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
-            if (state.state() != PendingGoogleRegistration.State.LINK_ISSUED
-                    || !InstitutionalEmailProof.eligible(state.recipient())
-                    || !state.expiresAt().equals(intent.expiresAt())
-                    || !equal(state.verifier(), linkDigest(state, token)))
-                throw new SessionRejectedException();
-            var key = new ExternalIdentityKey(state.issuer(), state.subject());
+            var key = new ExternalIdentityKey(proof.issuer(), proof.subject());
             if (identities.findByKey(key).isPresent()
-                    || pending.historicalEmailExists(state.recipient().normalized()))
-                throw new SessionRejectedException();
+                    || pending.historicalEmailExists(proof.verifiedEmail().normalized()))
+                throw new SessionRejectedException(SessionRejectedException.Reason.IDENTITY_CONFLICT);
             var userId = ids.nextId();
-            var user = User.create(userId, state.recipient(), new ProfileDetails(userId.value(), "Google", ""),
-                    URI.create("about:blank"), now());
+            var user = User.create(userId, proof.verifiedEmail(),
+                    new ProfileDetails(userId.value(), "Google", ""), URI.create("about:blank"), now());
             users.insert(user);
-            users.replace(user, user.verifyProfileEmail(state.recipient()));
+            users.replace(user, user.verifyProfileEmail(proof.verifiedEmail()));
             identities.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, key, userId,
-                    state.recipient(), IdentityLinkStatus.ACTIVE));
-            pending.replace(state, state.confirm());
-            var proof = new VerifiedGoogleIdentity(state.issuer(), state.subject(), audience,
-                    intent.createdAt(), intent.expiresAt(), state.recipient());
+                    proof.verifiedEmail(), IdentityLinkStatus.ACTIVE));
+            intents.replace(intent, intent.consume());
             var authenticated = sessions.createGoogle(proof);
             var issued = sessions.issue(authenticated, jwt);
             if (!now().isBefore(intent.expiresAt()))
@@ -142,14 +90,15 @@ public final class GoogleRegistrationService {
         });
     }
 
-    private GoogleLoginIntent intent(String id, String browser, boolean consumed) {
+    private GoogleLoginIntent intent(String id, String browser) {
         var value = intents.loadLocked(id).orElseThrow(SessionRejectedException::new);
+        if (value.consumed())
+            throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
         if (!now().isBefore(value.expiresAt()))
             throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_EXPIRED);
-        if (value.purpose() != GoogleLoginIntent.Purpose.REGISTRATION || value.consumed() != consumed
+        if (value.purpose() != GoogleLoginIntent.Purpose.REGISTRATION
                 || !equal(value.browserHash(), digest(browser)))
-            throw new SessionRejectedException(value.consumed() && !consumed
-                    ? SessionRejectedException.Reason.ATTEMPT_CONSUMED : SessionRejectedException.Reason.PROOF_INVALID);
+            throw new SessionRejectedException();
         return value;
     }
     private static void requireInputs(String id, String browser) {
@@ -160,10 +109,6 @@ public final class GoogleRegistrationService {
         byte[] bytes = new byte[size];
         random.nextBytes(bytes);
         return HexFormat.of().formatHex(bytes);
-    }
-    private static String linkDigest(PendingGoogleRegistration p, String token) {
-        return digest("mtec-register-link-v1\0" + p.attemptId() + "\0" + p.issuer() + "\0"
-                + p.subject() + "\0" + p.recipient().normalized() + "\0" + token);
     }
     private static String digest(String value) {
         try {
