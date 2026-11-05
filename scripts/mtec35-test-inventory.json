@@ -1,5 +1,5 @@
 {
-  "normal_count": 289,
+  "normal_count": 287,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -33,8 +33,8 @@
     "opaqueRefreshRotatesOnceAcrossConcurrentSqlTransactionsAndRevocation",
     "independentJvmRefreshRotationReplayRollbackAndRevocation",
     "independentHttpsListenersShareOneSqlRefreshGeneration",
-    "pendingGoogleRegistrationConfirmsOnceOnRealSqlWithTwoRepositoryInstances",
-    "pendingRegistrationJwtFailureRollsBackRealSqlWrites",
+    "immediateGoogleRegistrationCommitsOnceAcrossTwoSqlInstancesAndAllowsLaterLogin",
+    "immediateRegistrationJwtFailureAndExistingEmailLeaveNoSqlPartialWrites",
     "persistsAndFindsEveryUserAndProfileFieldLosslessly",
     "realDeadlockRollsBackAndRetriesTheCompleteUnit",
     "realSqlProfileFailureIsTranslatedAndRollsBackTheEarlierUserInsert",
@@ -224,32 +224,30 @@
       "wrongContextNonceExpiryAndInvalidTokenNeverCreateSession"
     ],
     "com.markettec.users.application.session.GoogleRegistrationServiceTest": [
-      "anotherIntentCannotUseTheLinkAndReplayCannotReissue",
-      "deliveryFailureRollsBackVerifierAndCannotConfirm",
-      "exactInstitutionalDomainsOnlyAndMismatchedEmailCannotReceiveLink",
-      "expiryHistoricalEmailAndExistingGoogleLinkDoNotCreateAccounts",
-      "googleProofIsPendingEvenWhenEmailVerifiedAndCreatesNoAccountOrCredentials",
-      "jwtFailureRollsBackUserLinkAndConsumption",
-      "linkRequiresOriginalBrowserAndCanConfirmOnlyOnce"
+      "existingEmailOrSubjectCannotLinkAutomatically",
+      "invalidProofBrowserAndExpiryCannotCreateAccount",
+      "onlyExactInstitutionalDomainsAreEligible",
+      "persistenceFailureRollsBackUserAndAttempt",
+      "signingAndSessionFailureRollBackAccountLinkAndAttempt",
+      "unverifiedOrMissingEmailCannotRegister",
+      "verifiedInstitutionalGoogleCreatesAccountLinkAndCredentialsImmediately"
     ],
     "com.markettec.users.config.GoogleRegistrationSafetyConfigTest": [
-      "absentAndExplicitFalseKeepOnlyInertSender",
-      "integrationAloneAllowsTestFlowAndMalformedFlagFailsStartup",
-      "realProfilesRejectEnabledRegistrationWithGoogleHttpAndLoginOff"
+      "disabledRegistrationNeedsNoSender",
+      "realProfilesAllowEnabledRegistrationWithGoogleLoginAndHttp",
+      "registrationRequiresLoginAndHttpAndMalformedFlagFailsStartup"
     ],
     "com.markettec.users.adapters.in.web.GoogleAuthControllerTest": [
-      "canonicalRegistrationAndEmailRequestReturnOnlyPendingAcknowledgments",
-      "confirmationPostIsOnlyRegistrationRouteThatCanReturnCredentials",
       "continuationRejectsMissingOrWrongPreSessionCsrf",
-      "emailEndpointsRequirePostAndOriginalBrowserProof",
+      "emailEndpointsAreUnavailableAndNeverReachGoogleRegistration",
       "enabledConstructorRequiresExplicitVerifiedHttpsTopology",
-      "legacyRegistrationReturns202WithoutCredentials",
       "loginAndRegistrationAttemptsKeepPurposeAndPreSessionProofSeparate",
       "loginMapsInternalResultAndKeepsRefreshOutOfBody(CapturedOutput)",
       "originAndShapeRejectBeforeCreatingAttempt",
       "preflightAllowsExactOriginAndHeadersOnly",
       "registrationDisabledByDefaultWhileLoginRemainsAvailable",
-      "registrationUsesPendingServiceAndMapsReplay"
+      "registrationReplayAndInvalidProofHaveSafeErrors",
+      "registrationReturnsSessionFromCanonicalAndAliasRoutes"
     ],
     "com.markettec.users.adapters.in.web.GoogleHttpDisabledTest": [
       "defaultApplicationDoesNotExposeGoogleAuthRoutes",

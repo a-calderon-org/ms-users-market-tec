@@ -1496,72 +1496,88 @@ class SqlUserStoreIT {
     }
 
     @Test
-    void pendingGoogleRegistrationConfirmsOnceOnRealSqlWithTwoRepositoryInstances() throws Exception {
+    void immediateGoogleRegistrationCommitsOnceAcrossTwoSqlInstancesAndAllowsLaterLogin() throws Exception {
         Instant now = Instant.parse("2026-11-03T12:00:00Z");
         Clock fixed = Clock.fixed(now, ZoneOffset.UTC);
         var key = new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString());
         var recipient = new Email("mtec36-" + UUID.randomUUID() + "@tec.ac.cr");
-        var secret = new AtomicReference<String>();
         int beforeUsers = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class);
         var firstStore = newStore();
         var secondStore = newStore();
-        var first = registrationForSql(firstStore, key, recipient, fixed, secret, false);
-        var second = registrationForSql(secondStore, key, recipient, fixed, secret, false);
+        var first = registrationForSql(firstStore, key, recipient, fixed, false);
+        var second = registrationForSql(secondStore, key, recipient, fixed, false);
         var challenge = first.begin();
-        assertEquals(challenge.expiresAt(), first.prepare(challenge.attemptId(),
-                challenge.browserSecret(), challenge.nonce()));
-        assertEquals(beforeUsers, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
-        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE subject=?",
-                Integer.class, key.subject()));
-        first.requestLink(challenge.attemptId(), challenge.browserSecret(), recipient.normalized());
-        assertNotNull(secret.get());
-        assertNotEquals(secret.get(), jdbc.queryForObject(
-                "SELECT verifier FROM dbo.pending_google_registrations WHERE attempt_id=?",
-                String.class, challenge.attemptId()).trim());
         var pool = Executors.newFixedThreadPool(2);
         try {
             var gate = new CountDownLatch(1);
             Callable<Boolean> a = () -> { gate.await();
-                try { first.confirm(challenge.attemptId(), challenge.browserSecret(), secret.get()); return true; }
+                try { first.complete(challenge.attemptId(), challenge.browserSecret(), challenge.nonce()); return true; }
                 catch (SessionRejectedException | UserPersistenceException rejected) { return false; } };
             Callable<Boolean> b = () -> { gate.await();
-                try { second.confirm(challenge.attemptId(), challenge.browserSecret(), secret.get()); return true; }
+                try { second.complete(challenge.attemptId(), challenge.browserSecret(), challenge.nonce()); return true; }
                 catch (SessionRejectedException | UserPersistenceException rejected) { return false; } };
             var x = pool.submit(a); var y = pool.submit(b); gate.countDown();
             assertEquals(1, (x.get(20, TimeUnit.SECONDS) ? 1 : 0) + (y.get(20, TimeUnit.SECONDS) ? 1 : 0));
         } finally { pool.shutdownNow(); }
         assertEquals(beforeUsers + 1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
-        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE subject=?",
-                Integer.class, key.subject()));
-        assertEquals("CONFIRMED", jdbc.queryForObject(
-                "SELECT state FROM dbo.pending_google_registrations WHERE attempt_id=?",
-                String.class, challenge.attemptId()));
+        String owner = jdbc.queryForObject("SELECT user_id FROM dbo.external_identities WHERE subject=?",
+                String.class, key.subject());
+        assertNotNull(owner);
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.sessions WHERE user_id=?",
+                Integer.class, owner));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.pending_google_registrations WHERE attempt_id=?",
+                Integer.class, challenge.attemptId()));
+        assertEquals(true, jdbc.queryForObject("SELECT consumed FROM dbo.google_login_intents WHERE attempt_id=?",
+                Boolean.class, challenge.attemptId()));
+
+        var authority = new SessionAuthority(new SqlSessionRepository(jdbc), firstStore, firstStore, firstStore,
+                fixed, new java.security.SecureRandom(), denySessionActions(), csrfKeys());
+        var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
+            if (!token.equals(context.expectedNonce())) throw new SessionRejectedException();
+            return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(
+                    key.issuer(), key.subject(), context.expectedAudience(), fixed.instant(),
+                    fixed.instant().plusSeconds(3600), recipient);
+        };
+        var login = new GoogleLoginService(new SqlGoogleLoginIntentRepository(jdbc), firstStore,
+                verifier, authority, ignored -> "jwt", "sql-client", fixed, new java.security.SecureRandom());
+        var loginChallenge = login.begin();
+        assertEquals(owner, login.complete(loginChallenge.attemptId(), loginChallenge.browserSecret(),
+                loginChallenge.nonce()).userId());
     }
 
     @Test
-    void pendingRegistrationJwtFailureRollsBackRealSqlWrites() {
+    void immediateRegistrationJwtFailureAndExistingEmailLeaveNoSqlPartialWrites() {
         Instant now = Instant.parse("2026-11-03T12:00:00Z");
         Clock fixed = Clock.fixed(now, ZoneOffset.UTC);
         var key = new ExternalIdentityKey("https://accounts.google.com", UUID.randomUUID().toString());
         var recipient = new Email("mtec36-" + UUID.randomUUID() + "@itcr.ac.cr");
-        var secret = new AtomicReference<String>();
-        var service = registrationForSql(newStore(), key, recipient, fixed, secret, true);
+        var service = registrationForSql(newStore(), key, recipient, fixed, true);
         var challenge = service.begin();
-        service.prepare(challenge.attemptId(), challenge.browserSecret(), challenge.nonce());
-        service.requestLink(challenge.attemptId(), challenge.browserSecret(), recipient.normalized());
         int before = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class);
         assertThrows(IllegalStateException.class, () ->
-                service.confirm(challenge.attemptId(), challenge.browserSecret(), secret.get()));
+                service.complete(challenge.attemptId(), challenge.browserSecret(), challenge.nonce()));
         assertEquals(before, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE subject=?",
                 Integer.class, key.subject()));
-        assertEquals("LINK_ISSUED", jdbc.queryForObject(
-                "SELECT state FROM dbo.pending_google_registrations WHERE attempt_id=?",
-                String.class, challenge.attemptId()));
+        assertEquals(false, jdbc.queryForObject("SELECT consumed FROM dbo.google_login_intents WHERE attempt_id=?",
+                Boolean.class, challenge.attemptId()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.sessions WHERE user_id IN "
+                + "(SELECT user_id FROM dbo.profiles WHERE correo=?)", Integer.class, recipient.address()));
+
+        var existing = User.create(new UuidUserIdGenerator().nextId(), recipient,
+                details, photo, now);
+        store.insert(existing);
+        var safe = registrationForSql(newStore(), key, recipient, fixed, false);
+        var next = safe.begin();
+        assertThrows(SessionRejectedException.class, () ->
+                safe.complete(next.attemptId(), next.browserSecret(), next.nonce()));
+        assertEquals(before + 1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.users", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE subject=?",
+                Integer.class, key.subject()));
     }
 
     private GoogleRegistrationService registrationForSql(SqlUserStore unit, ExternalIdentityKey key,
-            Email recipient, Clock fixed, AtomicReference<String> linkSecret, boolean failJwt) {
+            Email recipient, Clock fixed, boolean failJwt) {
         var authority = new SessionAuthority(new SqlSessionRepository(jdbc), unit, unit, unit,
                 fixed, new java.security.SecureRandom(), denySessionActions(), csrfKeys());
         var verifier = (com.markettec.users.application.ports.out.GoogleIdentityVerifier) (token, context) -> {
@@ -1574,7 +1590,6 @@ class SqlUserStoreIT {
                 new SqlPendingGoogleRegistrationRepository(jdbc), unit, verifier, unit, unit,
                 new UuidUserIdGenerator(), authority,
                 ignored -> { if (failJwt) throw new IllegalStateException("JWT failure"); return "jwt"; },
-                (to, id, token) -> linkSecret.set(token),
                 "sql-client", fixed, new java.security.SecureRandom());
     }
 

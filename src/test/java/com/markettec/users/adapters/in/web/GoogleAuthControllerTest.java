@@ -129,50 +129,10 @@ class GoogleAuthControllerTest {
                 null, null, "e".repeat(64)).toString().contains(jwt));
     }
 
-    @Test void registrationUsesPendingServiceAndMapsReplay() throws Exception {
-        when(registration.prepare(eq(ATTEMPT_ID), eq(SECRET), eq("google-proof"), anyString()))
-                .thenThrow(new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED));
-        mvc.perform(proof("/v1/auth/google/registrations")
-                .cookie(new Cookie("__Host-mtec-attempt", SECRET)).header("X-CSRF-Token", csrf()))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("ATTEMPT_CONSUMED"));
-        verifyNoInteractions(login);
-    }
-
-    @Test void legacyRegistrationReturns202WithoutCredentials() throws Exception {
-        when(registration.prepare(eq(ATTEMPT_ID), eq(SECRET), eq("google-proof"), anyString()))
-                .thenReturn(clock.instant().plusSeconds(300));
-        mvc.perform(proof("/v1/auth/google/registrations")
-                .cookie(new Cookie("__Host-mtec-attempt", SECRET)).header("X-CSRF-Token", csrf()))
-                .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.status").value("mailbox-verification-required"))
-                .andExpect(jsonPath("$.token").doesNotExist())
-                .andExpect(jsonPath("$.refreshToken").doesNotExist());
-        verifyNoInteractions(login, sessions, users);
-    }
-
-    @Test void canonicalRegistrationAndEmailRequestReturnOnlyPendingAcknowledgments() throws Exception {
-        when(registration.isRegistrationAttempt(ATTEMPT_ID)).thenReturn(true);
-        when(registration.prepare(eq(ATTEMPT_ID), eq(SECRET), eq("google-proof"), anyString()))
-                .thenReturn(clock.instant().plusSeconds(300));
-        mvc.perform(proof("/v1/auth/google").cookie(new Cookie("__Host-mtec-attempt", SECRET))
-                .header("X-CSRF-Token", csrf()))
-                .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.status").value("mailbox-verification-required"))
-                .andExpect(jsonPath("$.token").doesNotExist());
-        mvc.perform(post("/v1/auth/email/requests").header("Origin", ORIGIN).header("X-MTEC-Client", "web")
-                .cookie(new Cookie("__Host-mtec-attempt", SECRET)).header("X-CSRF-Token", csrf())
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"attemptId\":\"" + ATTEMPT_ID + "\",\"email\":\"a@TEC.AC.CR\"}"))
-                .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.status").value("accepted"))
-                .andExpect(jsonPath("$.token").doesNotExist());
-        verify(registration).requestLink(ATTEMPT_ID, SECRET, "a@tec.ac.cr");
-        verifyNoInteractions(login, sessions, users);
-    }
-
-    @Test void confirmationPostIsOnlyRegistrationRouteThatCanReturnCredentials() throws Exception {
+    @Test void registrationReturnsSessionFromCanonicalAndAliasRoutes() throws Exception {
         String jwt = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE3OTM3MDc0NDB9.c2ln";
-        when(registration.confirm(ATTEMPT_ID, SECRET, "e".repeat(64)))
+        when(registration.isRegistrationAttempt(ATTEMPT_ID)).thenReturn(true);
+        when(registration.complete(ATTEMPT_ID, SECRET, "google-proof"))
                 .thenReturn(new GoogleLoginService.Result(jwt, SESSION_ID, USER_ID,
                         clock.instant().plusSeconds(1800), "d".repeat(64), "f".repeat(64)));
         when(sessions.current(SESSION_ID)).thenReturn(Optional.of(Session.start(SESSION_ID,
@@ -180,22 +140,44 @@ class GoogleAuthControllerTest {
         when(users.findById(new UserId(USER_ID))).thenReturn(Optional.of(User.create(new UserId(USER_ID),
                 new Email("user@tec.ac.cr"), new ProfileDetails("user", "User", ""),
                 URI.create("about:blank"), clock.instant())));
-        mvc.perform(post("/v1/auth/email/confirm").header("Origin", ORIGIN).header("X-MTEC-Client", "web")
-                .cookie(new Cookie("__Host-mtec-attempt", SECRET)).header("X-CSRF-Token", csrf())
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"attemptId\":\"" + ATTEMPT_ID + "\",\"token\":\"" + "e".repeat(64) + "\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.token").value(jwt))
-                .andExpect(jsonPath("$.refreshToken").doesNotExist());
+        for (String path : new String[]{"/v1/auth/google", "/v1/auth/google/registrations"}) {
+            mvc.perform(proof(path).cookie(new Cookie("__Host-mtec-attempt", SECRET))
+                    .header("X-CSRF-Token", csrf()))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.token").value(jwt))
+                    .andExpect(jsonPath("$.csrfToken").value("f".repeat(64)))
+                    .andExpect(jsonPath("$.user.userId").value(USER_ID))
+                    .andExpect(jsonPath("$.refreshToken").doesNotExist())
+                    .andExpect(header().stringValues("Set-Cookie", org.hamcrest.Matchers.hasItem(
+                            org.hamcrest.Matchers.allOf(org.hamcrest.Matchers.containsString("__Host-mtec-refresh="),
+                                    org.hamcrest.Matchers.containsString("HttpOnly"),
+                                    org.hamcrest.Matchers.containsString("Secure"),
+                                    org.hamcrest.Matchers.containsString("SameSite=Lax")))));
+        }
+        verify(registration, times(2)).complete(ATTEMPT_ID, SECRET, "google-proof");
         verifyNoInteractions(login);
     }
 
-    @Test void emailEndpointsRequirePostAndOriginalBrowserProof() throws Exception {
+    @Test void registrationReplayAndInvalidProofHaveSafeErrors() throws Exception {
+        when(registration.isRegistrationAttempt(ATTEMPT_ID)).thenReturn(true);
+        when(registration.complete(ATTEMPT_ID, SECRET, "google-proof"))
+                .thenThrow(new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED));
+        mvc.perform(proof("/v1/auth/google").cookie(new Cookie("__Host-mtec-attempt", SECRET))
+                .header("X-CSRF-Token", csrf()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("ATTEMPT_CONSUMED"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content()
+                        .string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("google-proof"))));
+        verifyNoInteractions(login, sessions, users);
+    }
+
+    @Test void emailEndpointsAreUnavailableAndNeverReachGoogleRegistration() throws Exception {
+        for (String path : new String[]{"/v1/auth/email/requests", "/v1/auth/email/confirm"}) {
+            mvc.perform(post(path).header("Origin", ORIGIN).header("X-MTEC-Client", "web")
+                    .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isServiceUnavailable())
+                    .andExpect(jsonPath("$.error.code").value("AUTH_TEMPORARILY_UNAVAILABLE"));
+        }
         mvc.perform(get("/v1/auth/email/confirm")).andExpect(status().isMethodNotAllowed());
-        mvc.perform(post("/v1/auth/email/confirm").header("Origin", ORIGIN).header("X-MTEC-Client", "web")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"attemptId\":\"" + ATTEMPT_ID + "\",\"token\":\"" + "e".repeat(64) + "\"}"))
-                .andExpect(status().isForbidden());
-        verifyNoInteractions(registration);
+        verifyNoInteractions(registration, login, sessions, users);
     }
 
     @Test void registrationDisabledByDefaultWhileLoginRemainsAvailable() throws Exception {

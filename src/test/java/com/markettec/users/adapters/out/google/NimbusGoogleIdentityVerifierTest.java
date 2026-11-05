@@ -76,6 +76,8 @@ class NimbusGoogleIdentityVerifierTest {
         assertFalse(identity.toString().contains("admin@tec.ac.cr"));
         assertNull(verifier.verify(token(b -> b.claim("email", "other@example.org")
                 .claim("email_verified", false).claim("hd", "other.example")), context).verifiedEmail());
+        assertNull(verifier.verify(token(b -> b.claim("email", "other@tec.ac.cr")),
+                context).verifiedEmail());
         // No user repository, UserId or JWT issuer is involved in verification.
     }
 

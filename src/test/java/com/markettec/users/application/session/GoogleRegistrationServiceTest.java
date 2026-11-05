@@ -4,11 +4,9 @@ import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.memory.InMemoryUserStore;
 import com.markettec.users.application.ports.out.*;
 import com.markettec.users.domain.model.*;
-import java.net.URI;
 import java.security.SecureRandom;
 import java.time.*;
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
@@ -20,21 +18,18 @@ class GoogleRegistrationServiceTest {
     private final MutableClock clock = new MutableClock(start);
     private final InMemoryUserStore users = new InMemoryUserStore();
     private final Map<String, GoogleLoginIntent> intents = new HashMap<>();
-    private final Map<String, PendingGoogleRegistration> pending = new HashMap<>();
     private final ExternalIdentityKey key = new ExternalIdentityKey("https://accounts.google.com", "new-google-sub");
     private Email email = new Email("someone@tec.ac.cr");
-    private String delivered;
-    private boolean deliveryFails, historical;
+    private boolean verified = true, historical, invalidToken;
+    private String subject = "new-google-sub";
     private UserId lastGenerated;
     private final SessionAuthority sessions = mock(SessionAuthority.class);
     private final UserTransactions tx = new UserTransactions() {
         public synchronized <T> T execute(Supplier<T> work) {
-            var beforeIntents = new HashMap<>(intents);
-            var beforePending = new HashMap<>(pending);
+            var before = new HashMap<>(intents);
             try { return users.execute(work); }
             catch (RuntimeException | Error failure) {
-                intents.clear(); intents.putAll(beforeIntents);
-                pending.clear(); pending.putAll(beforePending);
+                intents.clear(); intents.putAll(before);
                 throw failure;
             }
         }
@@ -47,134 +42,136 @@ class GoogleRegistrationServiceTest {
         }
     };
     private final PendingGoogleRegistrationRepository pendingRepo = new PendingGoogleRegistrationRepository() {
-        public void insert(PendingGoogleRegistration p) { pending.put(p.attemptId(), p); }
-        public Optional<PendingGoogleRegistration> loadLocked(String id) { return Optional.ofNullable(pending.get(id)); }
-        public void replace(PendingGoogleRegistration before, PendingGoogleRegistration after) {
-            if (!pending.replace(before.attemptId(), before, after)) throw new IllegalStateException("race");
-        }
+        public void insert(PendingGoogleRegistration ignored) { fail("No pending Google registration"); }
+        public Optional<PendingGoogleRegistration> loadLocked(String id) { fail("No pending Google registration"); return Optional.empty(); }
+        public void replace(PendingGoogleRegistration before, PendingGoogleRegistration after) { fail("No pending Google registration"); }
         public boolean historicalEmailExists(String ignored) { return historical; }
     };
     private final GoogleIdentityVerifier verifier = (token, context) -> {
-        if (!("nonce:" + context.expectedNonce()).equals(token))
+        if (invalidToken || !("nonce:" + context.expectedNonce()).equals(token))
             throw new IllegalArgumentException("invalid token");
-        return new VerifiedGoogleIdentity(key.issuer(), key.subject(), context.expectedAudience(),
-                start, start.plusSeconds(3600), email);
+        return new VerifiedGoogleIdentity(key.issuer(), subject, context.expectedAudience(),
+                start, start.plusSeconds(3600), verified ? email : null);
     };
     private GoogleRegistrationService service() {
         when(sessions.createGoogle(any())).thenReturn(new AuthenticatedSession("a".repeat(32)));
-        doAnswer(call -> new SessionTokens("jwt", "b".repeat(64),
-                "c".repeat(64), "a".repeat(32), lastGenerated.value(), start.plusSeconds(1800)))
+        doAnswer(call -> new SessionTokens("jwt", "b".repeat(64), "c".repeat(64),
+                "a".repeat(32), lastGenerated.value(), start.plusSeconds(1800)))
                 .when(sessions).issue(any(), any());
-        InstitutionalLinkSender sender = (recipient, attemptId, secret) -> {
-            if (deliveryFails) throw new IllegalStateException("delivery failed");
-            assertEquals(email, recipient);
-            delivered = secret;
-        };
         return new GoogleRegistrationService(intentRepo, pendingRepo, tx, verifier, users, users,
                 () -> { lastGenerated = new UuidUserIdGenerator().nextId(); return lastGenerated; },
-                sessions, ignored -> "jwt", sender, "client-id", clock, new SecureRandom());
+                sessions, ignored -> "jwt", "client-id", clock, new SecureRandom());
     }
-    private GoogleLoginService.Challenge prepared(GoogleRegistrationService service) {
-        var challenge = service.begin();
-        service.prepare(challenge.attemptId(), challenge.browserSecret(), "nonce:" + challenge.nonce());
-        return challenge;
+    private GoogleLoginService.Result complete(GoogleRegistrationService service, GoogleLoginService.Challenge c) {
+        return service.complete(c.attemptId(), c.browserSecret(), "nonce:" + c.nonce());
     }
 
-    @Test void googleProofIsPendingEvenWhenEmailVerifiedAndCreatesNoAccountOrCredentials() {
+    @Test void verifiedInstitutionalGoogleCreatesAccountLinkAndCredentialsImmediately() {
         var service = service();
-        var c = prepared(service);
+        var c = service.begin();
+        var result = complete(service, c);
+        assertEquals(lastGenerated.value(), result.userId());
+        assertEquals("jwt", result.jwt());
+        assertEquals(64, result.refreshToken().length());
+        assertEquals(64, result.csrfToken().length());
+        assertTrue(users.findById(lastGenerated).orElseThrow().profile().verificado());
+        assertEquals(lastGenerated, users.findByKey(key).orElseThrow().userId());
         assertTrue(intents.get(c.attemptId()).consumed());
-        assertEquals(PendingGoogleRegistration.State.PENDING, pending.get(c.attemptId()).state());
-        assertNull(pending.get(c.attemptId()).verifier());
-        assertTrue(users.findByKey(key).isEmpty());
-        verifyNoInteractions(sessions);
-        assertThrows(SessionRejectedException.class, () ->
-                service.prepare(c.attemptId(), c.browserSecret(), "nonce:" + c.nonce()));
+        verify(sessions).issue(any(), any());
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
+                assertThrows(SessionRejectedException.class, () -> complete(service, c)).reason());
     }
 
-    @Test void exactInstitutionalDomainsOnlyAndMismatchedEmailCannotReceiveLink() {
+    @Test void onlyExactInstitutionalDomainsAreEligible() {
         for (String address : List.of("a@estudiantec.cr", "a@itcr.ac.cr", "a@tec.ac.cr",
                 "a@x.tec.ac.cr", "a@tec.ac.cr.evil", "a@example.com")) {
             email = new Email(address);
+            subject = address;
             var service = service();
-            var c = prepared(service);
+            var c = service.begin();
             boolean eligible = Set.of("a@estudiantec.cr", "a@itcr.ac.cr", "a@tec.ac.cr").contains(address);
-            assertEquals(eligible, pending.containsKey(c.attemptId()));
-            service.requestLink(c.attemptId(), c.browserSecret(), "other@tec.ac.cr");
-            assertNull(delivered);
             if (eligible) {
-                service.requestLink(c.attemptId(), c.browserSecret(), email.normalized());
-                assertNotNull(delivered);
-                assertNotEquals(delivered, pending.get(c.attemptId()).verifier());
-                delivered = null;
+                assertNotNull(complete(service, c));
+                assertTrue(intents.get(c.attemptId()).consumed());
+            } else {
+                assertThrows(SessionRejectedException.class, () -> complete(service, c));
+                assertFalse(intents.get(c.attemptId()).consumed());
             }
         }
     }
 
-    @Test void linkRequiresOriginalBrowserAndCanConfirmOnlyOnce() {
+    @Test void unverifiedOrMissingEmailCannotRegister() {
         var service = service();
-        var c = prepared(service);
-        service.requestLink(c.attemptId(), c.browserSecret(), email.normalized());
-        String secret = delivered;
-        assertThrows(SessionRejectedException.class, () -> service.confirm(c.attemptId(), "f".repeat(64), secret));
-        assertThrows(SessionRejectedException.class, () -> service.confirm(c.attemptId(), c.browserSecret(), "e".repeat(64)));
+        var c = service.begin();
+        verified = false;
+        assertThrows(SessionRejectedException.class, () -> complete(service, c));
         assertTrue(users.findByKey(key).isEmpty());
-        var result = service.confirm(c.attemptId(), c.browserSecret(), secret);
-        assertEquals(lastGenerated.value(), result.userId());
-        assertTrue(users.findById(lastGenerated).orElseThrow().profile().verificado());
-        assertEquals(PendingGoogleRegistration.State.CONFIRMED, pending.get(c.attemptId()).state());
-        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
-                assertThrows(SessionRejectedException.class, () ->
-                        service.confirm(c.attemptId(), c.browserSecret(), secret)).reason());
-        verify(sessions, times(1)).issue(any(), any());
+        assertFalse(intents.get(c.attemptId()).consumed());
     }
 
-    @Test void deliveryFailureRollsBackVerifierAndCannotConfirm() {
+    @Test void existingEmailOrSubjectCannotLinkAutomatically() {
         var service = service();
-        var c = prepared(service);
-        deliveryFails = true;
-        assertThrows(IllegalStateException.class, () ->
-                service.requestLink(c.attemptId(), c.browserSecret(), email.normalized()));
-        assertEquals(PendingGoogleRegistration.State.PENDING, pending.get(c.attemptId()).state());
-        assertTrue(users.findByKey(key).isEmpty());
-    }
-
-    @Test void expiryHistoricalEmailAndExistingGoogleLinkDoNotCreateAccounts() {
-        var service = service();
-        var c = prepared(service);
-        service.requestLink(c.attemptId(), c.browserSecret(), email.normalized());
+        var c = service.begin();
         historical = true;
-        assertThrows(SessionRejectedException.class, () -> service.confirm(c.attemptId(), c.browserSecret(), delivered));
-        assertTrue(users.findByKey(key).isEmpty());
+        assertEquals(SessionRejectedException.Reason.IDENTITY_CONFLICT,
+                assertThrows(SessionRejectedException.class, () -> complete(service, c)).reason());
         historical = false;
+        var owner = User.create(new UuidUserIdGenerator().nextId(), email,
+                new ProfileDetails("owner", "Owner", ""), java.net.URI.create("about:blank"), start);
+        users.insert(owner);
+        users.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, key, owner.userId(), email));
+        assertEquals(SessionRejectedException.Reason.IDENTITY_CONFLICT,
+                assertThrows(SessionRejectedException.class, () -> complete(service, c)).reason());
+        assertFalse(intents.get(c.attemptId()).consumed());
+        verify(sessions, never()).issue(any(), any());
+    }
+
+    @Test void invalidProofBrowserAndExpiryCannotCreateAccount() {
+        var service = service();
+        var c = service.begin();
+        assertThrows(SessionRejectedException.class, () ->
+                service.complete(c.attemptId(), "f".repeat(64), "nonce:" + c.nonce()));
+        invalidToken = true;
+        assertThrows(IllegalArgumentException.class, () -> complete(service, c));
+        invalidToken = false;
         clock.set(start.plusSeconds(300));
         assertEquals(SessionRejectedException.Reason.ATTEMPT_EXPIRED,
-                assertThrows(SessionRejectedException.class, () ->
-                        service.confirm(c.attemptId(), c.browserSecret(), delivered)).reason());
+                assertThrows(SessionRejectedException.class, () -> complete(service, c)).reason());
+        assertTrue(users.findByKey(key).isEmpty());
     }
 
-    @Test void jwtFailureRollsBackUserLinkAndConsumption() {
+    @Test void signingAndSessionFailureRollBackAccountLinkAndAttempt() {
         var service = service();
-        var c = prepared(service);
-        service.requestLink(c.attemptId(), c.browserSecret(), email.normalized());
-        doThrow(new IllegalStateException("JWT failed")).when(sessions).issue(any(), any());
-        assertThrows(IllegalStateException.class, () -> service.confirm(c.attemptId(), c.browserSecret(), delivered));
+        var c = service.begin();
+        doThrow(new IllegalStateException("session failed")).when(sessions).createGoogle(any());
+        assertThrows(IllegalStateException.class, () -> complete(service, c));
         assertTrue(users.findByKey(key).isEmpty());
         assertTrue(users.findById(lastGenerated).isEmpty());
-        assertEquals(PendingGoogleRegistration.State.LINK_ISSUED, pending.get(c.attemptId()).state());
+        assertFalse(intents.get(c.attemptId()).consumed());
+        reset(sessions);
+        var retry = service();
+        doThrow(new IllegalStateException("JWT failed")).when(sessions).issue(any(), any());
+        assertThrows(IllegalStateException.class, () -> complete(retry, c));
+        assertTrue(users.findByKey(key).isEmpty());
+        assertFalse(intents.get(c.attemptId()).consumed());
     }
 
-    @Test void anotherIntentCannotUseTheLinkAndReplayCannotReissue() {
-        var service = service();
-        var first = prepared(service);
-        service.requestLink(first.attemptId(), first.browserSecret(), email.normalized());
-        String secret = delivered;
-        var second = prepared(service);
-        assertThrows(SessionRejectedException.class, () ->
-                service.confirm(second.attemptId(), second.browserSecret(), secret));
-        delivered = null;
-        service.requestLink(first.attemptId(), first.browserSecret(), email.normalized());
-        assertNull(delivered);
+    @Test void persistenceFailureRollsBackUserAndAttempt() {
+        var c = service().begin();
+        UserRepository failing = new UserRepository() {
+            public Optional<User> findById(UserId id) { return users.findById(id); }
+            public void insert(User user) {
+                users.insert(user);
+                throw new IllegalStateException("persistence failed");
+            }
+            public void replace(User before, User after) { users.replace(before, after); }
+        };
+        var broken = new GoogleRegistrationService(intentRepo, pendingRepo, tx, verifier, failing, users,
+                new UuidUserIdGenerator(), sessions, ignored -> "jwt", "client-id", clock, new SecureRandom());
+        assertThrows(IllegalStateException.class, () -> complete(broken, c));
+        assertTrue(users.findByKey(key).isEmpty());
+        assertFalse(intents.get(c.attemptId()).consumed());
+        verify(sessions, never()).issue(any(), any());
     }
 
     private static final class MutableClock extends Clock {
