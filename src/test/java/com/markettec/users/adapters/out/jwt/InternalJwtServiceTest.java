@@ -10,6 +10,7 @@ import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jose.crypto.RSASSAVerifier;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
@@ -295,6 +296,16 @@ class InternalJwtServiceTest {
         assertFalse(json.contains("\"d\""));
         assertFalse(json.contains("PRIVATE KEY"));
         assertTrue(JWKSet.parse(json).getKeys().stream().noneMatch(k -> k.isPrivate()));
+    }
+
+    @Test void publishedJwksVerifiesTheIssuedJwt() throws Exception {
+        InternalJwtKeyRing keys = ring("new", material("old", first, false), material("new", second, true));
+        SignedJWT jwt = SignedJWT.parse(issue(service(keys, clock), session()));
+        var published = JWKSet.parse(keys.publicJwksJson()).getKeys().stream()
+                .filter(key -> key.getKeyID().equals(jwt.getHeader().getKeyID()))
+                .findFirst().orElseThrow();
+        assertTrue(jwt.verify(new RSASSAVerifier(published.toRSAKey())));
+        assertFalse(published.isPrivate());
     }
 
     @Test void rejectsMalformedOversizedAndJoseUrls() throws Exception {
