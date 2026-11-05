@@ -20,6 +20,7 @@ users:
     enabled: ${USERS_INTERNAL_JWT_ENABLED:false}
     issuer: ${USERS_INTERNAL_JWT_ISSUER:}
     audience: ${USERS_INTERNAL_JWT_AUDIENCE:}
+    public-jwks-uri: ${USERS_INTERNAL_JWT_PUBLIC_JWKS_URI:}
     active-kid: ${USERS_INTERNAL_JWT_ACTIVE_KID:}
     keys-json: ${USERS_INTERNAL_JWT_KEYS_JSON:}
   session:

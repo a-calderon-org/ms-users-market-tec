@@ -8,6 +8,7 @@ import com.markettec.users.application.session.SessionRejectedException;
 import com.markettec.users.domain.model.UserId;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jwt.JWTClaimsSet;
@@ -92,6 +93,7 @@ class InternalJwtServiceTest {
         String compact = issue(service, session());
         var claims = SignedJWT.parse(compact).getJWTClaimsSet();
         assertEquals(JWSAlgorithm.RS256, SignedJWT.parse(compact).getHeader().getAlgorithm());
+        assertEquals("at+jwt", SignedJWT.parse(compact).getHeader().getType().toString());
         assertEquals("new", SignedJWT.parse(compact).getHeader().getKeyID());
         assertEquals(USER.value(), claims.getSubject());
         assertEquals(SID, claims.getStringClaim("sid"));
@@ -220,7 +222,8 @@ class InternalJwtServiceTest {
         JWTClaimsSet claims = new JWTClaimsSet.Builder().subject(USER.value()).claim("sid", SID)
                 .issuer(issuer).audience(audience).issueTime(Date.from(NOW))
                 .expirationTime(Date.from(expiry)).jwtID(SID).build();
-        SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(algorithm).keyID(kid).build(), claims);
+        SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(algorithm)
+                .type(new JOSEObjectType("at+jwt")).keyID(kid).build(), claims);
         jwt.sign(new RSASSASigner((RSAPrivateKey) key.getPrivate()));
         return jwt.serialize();
     }
@@ -257,6 +260,17 @@ class InternalJwtServiceTest {
         InternalJwtService service = service(ring("new", material("new", first, true)),
                 Clock.fixed(NOW.plusSeconds(100), ZoneOffset.UTC));
         assertThrows(InternalJwtService.InvalidInternalJwtException.class, () -> service.verify(jwt));
+    }
+
+    @Test void rejectsFutureNotBefore() throws Exception {
+        JWTClaimsSet claims = new JWTClaimsSet.Builder().subject(USER.value()).claim("sid", SID)
+                .issuer("https://users.markettec.invalid").audience("markettec-api")
+                .issueTime(Date.from(NOW)).notBeforeTime(Date.from(NOW.plusSeconds(30)))
+                .expirationTime(Date.from(NOW.plusSeconds(100))).jwtID(SID).build();
+        SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256)
+                .type(new JOSEObjectType("at+jwt")).keyID("new").build(), claims);
+        jwt.sign(new RSASSASigner((RSAPrivateKey) first.getPrivate()));
+        assertThrows(InternalJwtService.InvalidInternalJwtException.class, () -> service().verify(jwt.serialize()));
     }
 
     @Test void rejectsOtherwiseValidTokenLongerThan240Seconds() throws Exception {
