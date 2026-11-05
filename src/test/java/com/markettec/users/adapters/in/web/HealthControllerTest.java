@@ -47,4 +47,10 @@ class HealthControllerTest {
                 .andExpect(jsonPath("$.error.correlationId").isString())
                 .andExpect(jsonPath("$.error.timestamp").isNumber());
     }
+
+    @Test
+    void identityEndpointsAreAbsentWhenJwtIsDisabled() throws Exception {
+        mockMvc.perform(get("/.well-known/jwks.json")).andExpect(status().isNotFound());
+        mockMvc.perform(get("/.well-known/markettec-identity")).andExpect(status().isNotFound());
+    }
 }

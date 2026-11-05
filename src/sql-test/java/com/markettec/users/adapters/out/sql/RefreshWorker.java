@@ -101,6 +101,7 @@ public final class RefreshWorker {
                 Map.entry("users.internal-jwt.enabled", "true"),
                 Map.entry("users.internal-jwt.issuer", "https://api.markettec.example"),
                 Map.entry("users.internal-jwt.audience", "mtec40-qa"),
+                Map.entry("users.internal-jwt.public-jwks-uri", "https://api.markettec.example/.well-known/jwks.json"),
                 Map.entry("users.internal-jwt.active-kid", "sql-test"),
                 Map.entry("users.internal-jwt.keys-json", config.getProperty("jwtKeys")),
                 Map.entry("users.session.http.enabled", "true"),

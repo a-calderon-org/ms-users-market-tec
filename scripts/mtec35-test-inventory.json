@@ -1,5 +1,5 @@
 {
-  "normal_count": 287,
+  "normal_count": 292,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -193,6 +193,8 @@
       "rejectsOtherwiseValidTokenLongerThan240Seconds",
       "rotationOverlapsOldPublicAndNewSigningKey",
       "jwksContainsOnlyPublicMaterial",
+      "publishedJwksVerifiesTheIssuedJwt",
+      "rejectsFutureNotBefore",
       "rejectsMalformedOversizedAndJoseUrls",
       "cannotIssueFromArbitraryUnauthenticatedIdentity",
       "rejectsWeakIncompleteAndMismatchedKeys"
@@ -274,6 +276,13 @@
       "unknownOrConsumedProofDoesNotConfirmLogout",
       "preflightOnlyAllowsExactPostAndHeaders",
       "configurationRequiresVerifiedHttps"
+    ],
+    "com.markettec.users.adapters.in.web.IdentityMetadataControllerTest": [
+      "publishesOnlyPublicKeysAndContractMetadata",
+      "refusesUntrustedPublicUri"
+    ],
+    "com.markettec.users.adapters.in.web.HealthControllerTest": [
+      "identityEndpointsAreAbsentWhenJwtIsDisabled"
     ]
   }
 }

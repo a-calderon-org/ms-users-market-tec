@@ -11,6 +11,7 @@ import com.markettec.users.domain.model.UserId;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.crypto.RSASSAVerifier;
 import com.nimbusds.jwt.JWTClaimsSet;
@@ -69,7 +70,7 @@ public final class InternalJwtService implements InternalTokenVerifier, Internal
                 .expirationTime(Date.from(Instant.ofEpochSecond(expirySecond)))
                 .jwtID(HexFormat.of().formatHex(jtiBytes)).build();
         SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256)
-                .keyID(keys.active().getKeyID()).build(), claims);
+                .type(new JOSEObjectType("at+jwt")).keyID(keys.active().getKeyID()).build(), claims);
         try {
             jwt.sign(new RSASSASigner(keys.active()));
             return jwt.serialize();
@@ -85,7 +86,8 @@ public final class InternalJwtService implements InternalTokenVerifier, Internal
         try {
             SignedJWT jwt = SignedJWT.parse(compact);
             JWSHeader header = jwt.getHeader();
-            if (!JWSAlgorithm.RS256.equals(header.getAlgorithm()) || header.getKeyID() == null
+            if (!JWSAlgorithm.RS256.equals(header.getAlgorithm())
+                    || !new JOSEObjectType("at+jwt").equals(header.getType()) || header.getKeyID() == null
                     || header.getJWK() != null || header.getJWKURL() != null
                     || header.getX509CertURL() != null || header.getX509CertChain() != null
                     || header.getCriticalParams() != null || !header.getCustomParams().isEmpty())
@@ -99,11 +101,13 @@ public final class InternalJwtService implements InternalTokenVerifier, Internal
             String jti = claims.getJWTID();
             Date issued = claims.getIssueTime();
             Date expiry = claims.getExpirationTime();
+            Date notBefore = claims.getNotBeforeTime();
             Instant now = clock.instant();
             if (!issuer.equals(claims.getIssuer()) || !List.of(audience).equals(claims.getAudience())
                     || sid == null || !sid.matches("[0-9a-f]{32}")
                     || jti == null || !jti.matches("[0-9a-f]{32}")
                     || issued == null || expiry == null || issued.after(Date.from(now))
+                    || (notBefore != null && (notBefore.after(Date.from(now)) || notBefore.after(expiry)))
                     || !expiry.after(issued) || !now.isBefore(expiry.toInstant())
                     || expiry.toInstant().isAfter(issued.toInstant().plusSeconds(240)))
                 throw new InvalidInternalJwtException();
