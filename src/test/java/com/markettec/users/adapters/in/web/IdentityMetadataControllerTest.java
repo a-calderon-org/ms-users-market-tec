@@ -6,8 +6,11 @@ import com.nimbusds.jose.jwk.JWKSet;
 import java.security.KeyPairGenerator;
 import java.util.Base64;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 class IdentityMetadataControllerTest {
     private static InternalJwtKeyRing keys() throws Exception {
@@ -36,6 +39,9 @@ class IdentityMetadataControllerTest {
         assertEquals("at+jwt", metadata.getBody().get("access_token_type"));
         assertEquals("0.3.0-draft", metadata.getBody().get("contract_version"));
         assertFalse(metadata.getBody().toString().contains("PRIVATE KEY"));
+        var http = MockMvcBuilders.standaloneSetup(controller).build();
+        http.perform(get("/.well-known/jwks.json")).andExpect(status().isOk());
+        http.perform(get("/.well-known/markettec-identity")).andExpect(status().isOk());
     }
 
     @Test void refusesUntrustedPublicUri() throws Exception {
