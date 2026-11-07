@@ -41,6 +41,24 @@ public final class RecentAuthenticationAuthority {
         });
     }
 
+    /** Read-only snapshot for same-package services that hold the session lock. */
+    java.util.Optional<RecentAttempt> attempt(String attemptId) { return attempts.loadLocked(attemptId); }
+
+    /** Re-checks, at the current instant, that a verified attempt is still within its proof window. */
+    void requireFresh(RecentAttempt a) {
+        Instant now = now();
+        if (a == null || a.authenticatedAt() == null || !now.isBefore(a.expiresAt())
+                || a.authenticatedAt().isAfter(now)
+                || Duration.between(a.authenticatedAt(), now).compareTo(Duration.ofSeconds(300)) >= 0)
+            throw new SessionRejectedException();
+    }
+
+    /** Records fresh verification of an attempt the caller has just proven; same bindings as any evidence. */
+    void recordVerifiedFor(RecentAttempt attempt, UserId userId, String sessionId) {
+        recordVerified(new TrustedRecentEvidence(userId, sessionId, attempt.attemptId(), attempt.method(),
+                attempt.operation(), attempt.target(), attempt.nonce(), now()));
+    }
+
     /** Package access deliberately excludes public adapters and arbitrary DTOs. */
     void recordVerified(TrustedRecentEvidence evidence) {
         if (evidence == null || evidence.userId == null) throw new SessionRejectedException();
@@ -61,6 +79,14 @@ public final class RecentAuthenticationAuthority {
     public <T> T consume(String sessionId, UserId userId, String attemptId,
                          RecentAttempt.Method method, String operation, String target, Supplier<T> mutation) {
         Objects.requireNonNull(mutation);
+        return consumeWith(sessionId, userId, attemptId, method, operation, target, attempt -> mutation.get());
+    }
+
+    /** Same single-use contract; the mutation receives the bound attempt (e.g. its nonce). */
+    public <T> T consumeWith(String sessionId, UserId userId, String attemptId,
+                             RecentAttempt.Method method, String operation, String target,
+                             java.util.function.Function<RecentAttempt, T> mutation) {
+        Objects.requireNonNull(mutation);
         return sessions.withCurrentSession(sessionId, userId, () -> {
             RecentAttempt before = attempts.loadLocked(attemptId).orElseThrow(SessionRejectedException::new);
             Instant now = now();
@@ -70,7 +96,7 @@ public final class RecentAuthenticationAuthority {
                     || Duration.between(before.authenticatedAt(), now).compareTo(Duration.ofSeconds(300)) >= 0)
                 throw new SessionRejectedException();
             attempts.replace(before, before.consume());
-            T result = mutation.get();
+            T result = mutation.apply(before);
             Instant commitTime = now();
             if (!commitTime.isBefore(before.expiresAt())
                     || Duration.between(before.authenticatedAt(), commitTime).compareTo(Duration.ofSeconds(300)) >= 0)

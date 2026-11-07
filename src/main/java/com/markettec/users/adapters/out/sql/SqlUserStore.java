@@ -227,6 +227,18 @@ public final class SqlUserStore implements UserRepository, ExternalIdentityRepos
     }
 
     @Override
+    public java.util.List<ExternalIdentity> findByUser(UserId userId) {
+        Objects.requireNonNull(userId);
+        return inUnit(() -> jdbc.query("""
+                SELECT issuer, subject, user_id, provider, verified_email, link_status FROM dbo.external_identities
+                WHERE user_id = ? ORDER BY provider, verified_email
+                """, (rs, row) -> new ExternalIdentity(IdentityProvider.valueOf(rs.getString("provider")),
+                new ExternalIdentityKey(rs.getString("issuer"), rs.getString("subject")),
+                new UserId(rs.getString("user_id")), new Email(rs.getString("verified_email")),
+                IdentityLinkStatus.valueOf(rs.getString("link_status"))), userId.value()));
+    }
+
+    @Override
     public void replaceStatus(ExternalIdentity expected, IdentityLinkStatus status) {
         Objects.requireNonNull(expected);
         Objects.requireNonNull(status);
