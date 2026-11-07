@@ -23,6 +23,17 @@ users:
     public-jwks-uri: ${USERS_INTERNAL_JWT_PUBLIC_JWKS_URI:}
     active-kid: ${USERS_INTERNAL_JWT_ACTIVE_KID:}
     keys-json: ${USERS_INTERNAL_JWT_KEYS_JSON:}
+  api:
+    http:
+      enabled: ${USERS_API_HTTP_ENABLED:false}
+  email:
+    enabled: ${USERS_EMAIL_ENABLED:false}
+    from: ${USERS_EMAIL_FROM:}
+    login-link-base-url: ${USERS_EMAIL_LOGIN_LINK_BASE_URL:}
+    proof-link-base-url: ${USERS_EMAIL_PROOF_LINK_BASE_URL:}
+    provider:
+      endpoint: ${USERS_EMAIL_PROVIDER_ENDPOINT:}
+      api-key: ${USERS_EMAIL_PROVIDER_API_KEY:}
   session:
     logout:
       enabled: ${USERS_SESSION_LOGOUT_ENABLED:false}

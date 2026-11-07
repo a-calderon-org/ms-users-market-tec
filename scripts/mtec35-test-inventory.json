@@ -1,5 +1,5 @@
 {
-  "normal_count": 292,
+  "normal_count": 329,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -241,7 +241,7 @@
     ],
     "com.markettec.users.adapters.in.web.GoogleAuthControllerTest": [
       "continuationRejectsMissingOrWrongPreSessionCsrf",
-      "emailEndpointsAreUnavailableAndNeverReachGoogleRegistration",
+      "emailRoutesAreNotOwnedByTheGoogleController",
       "enabledConstructorRequiresExplicitVerifiedHttpsTopology",
       "loginAndRegistrationAttemptsKeepPurposeAndPreSessionProofSeparate",
       "loginMapsInternalResultAndKeepsRefreshOutOfBody(CapturedOutput)",

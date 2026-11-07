@@ -364,6 +364,7 @@ class UserServiceTest {
     private ExternalIdentityRepository failingAfterIdentityInsert() {
         return new ExternalIdentityRepository() {
             public Optional<ExternalIdentity> findByKey(ExternalIdentityKey key) { return store.findByKey(key); }
+            public java.util.List<ExternalIdentity> findByUser(UserId userId) { return store.findByUser(userId); }
             public void replaceStatus(ExternalIdentity expected, IdentityLinkStatus status) {
                 store.replaceStatus(expected, status);
             }

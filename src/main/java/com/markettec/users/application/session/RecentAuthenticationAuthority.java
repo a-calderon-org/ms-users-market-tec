@@ -61,6 +61,14 @@ public final class RecentAuthenticationAuthority {
     public <T> T consume(String sessionId, UserId userId, String attemptId,
                          RecentAttempt.Method method, String operation, String target, Supplier<T> mutation) {
         Objects.requireNonNull(mutation);
+        return consumeWith(sessionId, userId, attemptId, method, operation, target, attempt -> mutation.get());
+    }
+
+    /** Same single-use contract; the mutation receives the bound attempt (e.g. its nonce). */
+    public <T> T consumeWith(String sessionId, UserId userId, String attemptId,
+                             RecentAttempt.Method method, String operation, String target,
+                             java.util.function.Function<RecentAttempt, T> mutation) {
+        Objects.requireNonNull(mutation);
         return sessions.withCurrentSession(sessionId, userId, () -> {
             RecentAttempt before = attempts.loadLocked(attemptId).orElseThrow(SessionRejectedException::new);
             Instant now = now();
@@ -70,7 +78,7 @@ public final class RecentAuthenticationAuthority {
                     || Duration.between(before.authenticatedAt(), now).compareTo(Duration.ofSeconds(300)) >= 0)
                 throw new SessionRejectedException();
             attempts.replace(before, before.consume());
-            T result = mutation.get();
+            T result = mutation.apply(before);
             Instant commitTime = now();
             if (!commitTime.isBefore(before.expiresAt())
                     || Duration.between(before.authenticatedAt(), commitTime).compareTo(Duration.ofSeconds(300)) >= 0)

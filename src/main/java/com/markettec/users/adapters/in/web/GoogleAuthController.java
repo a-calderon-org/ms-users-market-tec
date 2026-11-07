@@ -142,19 +142,6 @@ public final class GoogleAuthController {
         return complete(body, request, true);
     }
 
-    /** Independent email authentication awaits verified delivery and persistence. */
-    @PostMapping(path = "/v1/auth/email/requests", consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> requestEmail(@RequestBody JsonNode body, HttpServletRequest request) {
-        throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
-    }
-
-    @PostMapping(path = "/v1/auth/email/confirm", consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> confirmEmail(@RequestBody JsonNode body, HttpServletRequest request) {
-        throw new AuthHttpException(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE");
-    }
-
     private ResponseEntity<?> complete(JsonNode body, HttpServletRequest request, boolean register) {
         var headers = guard(request, true);
         if (!fields(body, "attemptId", "credential") || !body.path("attemptId").isTextual()
