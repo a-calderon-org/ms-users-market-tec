@@ -559,10 +559,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("11", flyway.info().current().getVersion().getVersion());
-        assertEquals(11, flyway.info().applied().length);
+        assertEquals("12", flyway.info().current().getVersion().getVersion());
+        assertEquals(12, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(11, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(12, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
