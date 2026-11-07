@@ -14,12 +14,14 @@ public final class AuthMethodsService {
     private final RecentAuthenticationAuthority recent;
     private final ExternalIdentityRepository identities;
     private final UserRepository users;
+    private final ProvenIdentityRepository proven;
     private final GoogleIdentityVerifier google;
     private final String googleAudience;
 
     public AuthMethodsService(SessionAuthority sessions, RecentAuthenticationAuthority recent,
             ExternalIdentityRepository identities, UserRepository users,
-            GoogleIdentityVerifier google, String googleAudience) {
+            GoogleIdentityVerifier google, String googleAudience, ProvenIdentityRepository proven) {
+        this.proven = Objects.requireNonNull(proven);
         this.sessions = Objects.requireNonNull(sessions);
         this.recent = Objects.requireNonNull(recent);
         this.identities = Objects.requireNonNull(identities);
@@ -51,10 +53,14 @@ public final class AuthMethodsService {
                 RecentProofService.LINK_CURRENT, provider.name(), current -> {
             User user = users.findById(userId).orElseThrow(SessionRejectedException::new);
             user.requireActive();
-            // The proven current method must really be an active link of this account.
-            if (identities.findByUser(userId).stream().noneMatch(i -> i.provider() == currentProvider
-                    && i.status() == IdentityLinkStatus.ACTIVE)) throw new SessionRejectedException();
+            // Revalidate the exact identity the current proof demonstrated: same key, still this
+            // account's, same provider, still ACTIVE (not suspended, revoked or reassigned).
+            var provenKey = proven.find(currentAttemptId).orElseThrow(SessionRejectedException::new);
+            var held = identities.findByKey(provenKey).orElseThrow(SessionRejectedException::new);
+            if (held.provider() != currentProvider || !held.userId().equals(userId)
+                    || held.status() != IdentityLinkStatus.ACTIVE) throw new SessionRejectedException();
             ExternalIdentity candidate;
+            RecentAttempt newProof;
             if (addGoogle) {
                 // The new-method proof is the credential itself, bound to its own attempt nonce.
                 var fresh = recent.attempt(newAttemptId).orElseThrow(SessionRejectedException::new);
@@ -64,6 +70,7 @@ public final class AuthMethodsService {
                         || !InstitutionalEmailProof.eligible(verified.verifiedEmail()))
                     throw new SessionRejectedException();
                 recent.recordVerifiedFor(fresh, userId, sessionId);
+                newProof = recent.attempt(newAttemptId).orElseThrow(SessionRejectedException::new);
                 recent.consumeWith(sessionId, userId, newAttemptId, RecentAttempt.Method.GOOGLE,
                         RecentProofService.LINK_NEW, "GOOGLE", a -> null);
                 candidate = new ExternalIdentity(IdentityProvider.GOOGLE,
@@ -72,6 +79,7 @@ public final class AuthMethodsService {
             } else {
                 Email own = user.profile().correo();
                 if (!InstitutionalEmailProof.eligible(own)) throw new SessionRejectedException();
+                newProof = recent.attempt(newAttemptId).orElseThrow(SessionRejectedException::new);
                 recent.consumeWith(sessionId, userId, newAttemptId, RecentAttempt.Method.INSTITUTIONAL_EMAIL,
                         RecentProofService.LINK_NEW, RecentProofService.EMAIL_TARGET_PREFIX + own.normalized(),
                         a -> null);
@@ -79,7 +87,11 @@ public final class AuthMethodsService {
                         new ExternalIdentityKey(EmailLoginService.ISSUER, own.normalized()), userId, own,
                         IdentityLinkStatus.ACTIVE);
             }
-            return identities.insertOrGet(candidate);
+            ExternalIdentity stored = identities.insertOrGet(candidate);
+            // Both proofs must still be inside their window at the end; otherwise everything rolls back.
+            recent.requireFresh(current);
+            recent.requireFresh(newProof);
+            return stored;
         });
     }
 }

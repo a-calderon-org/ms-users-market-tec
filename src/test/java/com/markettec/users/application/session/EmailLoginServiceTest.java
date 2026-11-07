@@ -112,15 +112,30 @@ class EmailLoginServiceTest {
         verify(sessions, times(1)).createAuthenticated(any());
     }
 
-    @Test void anotherBrowserCannotRedeemAndDoesNotSpendTheLink() {
+    @Test void foreignBrowsersChangeNothingAndCannotBlockTheLegitimateRedemption() {
         var link = requestLink("ana@tec.ac.cr");
         String mine = browser;
-        assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], "9".repeat(64), link[2]));
+        var before = rows.get(link[1]);
+        for (int i = 0; i < 10; i++)
+            assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], "9".repeat(64), link[2]));
+        assertEquals(before, rows.get(link[1]));
+        assertEquals(0, rows.get(link[1]).failures());
         assertFalse(rows.get(link[1]).consumed());
-        assertEquals(1, rows.get(link[1]).failures());
         assertEquals(0, issued);
         assertNotNull(service.confirm(link[1], mine, link[2]));
-        assertNotEquals(sha256Hex(link[2]), rows.get(link[1]).browserHash());
+    }
+
+    @Test void foreignBrowserLearnsNothingAboutConsumedOrExpiredLinks() {
+        var link = requestLink("ana@tec.ac.cr");
+        service.confirm(link[1], browser, link[2]);
+        var reason = assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], "9".repeat(64), link[2])).reason();
+        assertEquals(SessionRejectedException.Reason.PROOF_INVALID, reason);
+    }
+
+    @Test void onlyTheRequestingBrowserCanBurnAttemptsWithAWrongToken() {
+        var link = requestLink("ana@tec.ac.cr");
+        assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], browser, "f".repeat(64)));
+        assertEquals(1, rows.get(link[1]).failures());
     }
 
     private static String sha256Hex(String v) {

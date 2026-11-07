@@ -1,5 +1,6 @@
 package com.markettec.users.adapters.in.web;
 
+import com.markettec.users.adapters.out.google.InvalidGoogleTokenException;
 import com.markettec.users.adapters.out.jwt.InternalJwtService.InvalidInternalJwtException;
 import com.markettec.users.application.session.EmailDeliveryException;
 import com.markettec.users.application.session.SessionRejectedException;
@@ -32,6 +33,8 @@ final class ApiErrors {
             return of(http.status(), http.code(), request, clock);
         if (failure instanceof InvalidInternalJwtException)
             return of(HttpStatus.UNAUTHORIZED, "AUTH_REQUIRED", request, clock);
+        if (failure instanceof InvalidGoogleTokenException)
+            return of(HttpStatus.UNAUTHORIZED, "AUTH_PROOF_INVALID", request, clock);
         if (failure instanceof SessionRejectedException rejected) return switch (rejected.reason()) {
             case ATTEMPT_CONSUMED -> of(HttpStatus.CONFLICT, "ATTEMPT_CONSUMED", request, clock);
             case ATTEMPT_EXPIRED -> of(HttpStatus.GONE, "ATTEMPT_EXPIRED", request, clock);

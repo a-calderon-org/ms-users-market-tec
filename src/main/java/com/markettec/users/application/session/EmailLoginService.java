@@ -96,13 +96,13 @@ public final class EmailLoginService {
             var attempt = attempts.loadLocked(attemptId).orElse(null);
             if (attempt == null) return new Outcome(Kind.REJECTED, null);
             Instant now = now();
+            // A foreign browser changes nothing and learns nothing: no failure count, no consumption.
+            if (!equal(attempt.browserHash(), sha256(browserSecret))) return new Outcome(Kind.REJECTED, null);
             if (attempt.consumed()) return new Outcome(Kind.CONSUMED, null);
             if (!now.isBefore(attempt.expiresAt())) return new Outcome(Kind.EXPIRED, null);
             if (attempt.failures() >= EmailLoginAttempt.MAX_FAILURES) return new Outcome(Kind.REJECTED, null);
-            // Other browsers learn nothing and cannot spend the link; wrong proof counts as a failure.
-            boolean browserOk = equal(attempt.browserHash(), sha256(browserSecret));
-            boolean tokenOk = equal(attempt.verifier(), digest(attempt.recipient(), attemptId, token));
-            if (!browserOk || !tokenOk) {
+            // Only the requesting browser can burn attempts with a wrong token.
+            if (!equal(attempt.verifier(), digest(attempt.recipient(), attemptId, token))) {
                 attempts.replace(attempt, attempt.failed()); // committed: the failure is returned, not thrown
                 return new Outcome(Kind.REJECTED, null);
             }

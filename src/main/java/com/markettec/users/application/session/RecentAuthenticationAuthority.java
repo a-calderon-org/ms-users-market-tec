@@ -44,6 +44,15 @@ public final class RecentAuthenticationAuthority {
     /** Read-only snapshot for same-package services that hold the session lock. */
     java.util.Optional<RecentAttempt> attempt(String attemptId) { return attempts.loadLocked(attemptId); }
 
+    /** Re-checks, at the current instant, that a verified attempt is still within its proof window. */
+    void requireFresh(RecentAttempt a) {
+        Instant now = now();
+        if (a == null || a.authenticatedAt() == null || !now.isBefore(a.expiresAt())
+                || a.authenticatedAt().isAfter(now)
+                || Duration.between(a.authenticatedAt(), now).compareTo(Duration.ofSeconds(300)) >= 0)
+            throw new SessionRejectedException();
+    }
+
     /** Records fresh verification of an attempt the caller has just proven; same bindings as any evidence. */
     void recordVerifiedFor(RecentAttempt attempt, UserId userId, String sessionId) {
         recordVerified(new TrustedRecentEvidence(userId, sessionId, attempt.attemptId(), attempt.method(),

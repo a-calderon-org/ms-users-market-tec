@@ -102,7 +102,7 @@ class SqlUserStoreIT {
             }
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(3, flyway.migrate().migrationsExecuted);
+            assertEquals(4, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
@@ -559,10 +559,10 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("12", flyway.info().current().getVersion().getVersion());
-        assertEquals(12, flyway.info().applied().length);
+        assertEquals("13", flyway.info().current().getVersion().getVersion());
+        assertEquals(13, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(12, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(13, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
@@ -1932,5 +1932,167 @@ class SqlUserStoreIT {
             var two = executor.submit(second::get);
             return List.of(one.get(60, TimeUnit.SECONDS), two.get(60, TimeUnit.SECONDS));
         }
+    }
+
+    // ---- MTEC-19/36: V12 -> V13 and exact two-proof identity linking -------------------------------
+
+    @Test
+    void flywayUpgradesAppliedV12ToV13WithoutTouchingTheV12ChecksumAndInvalidatesLegacyLinks() throws Exception {
+        String database = "mtec_upgrade_v12";
+        new JdbcTemplate(server.source("master")).execute("CREATE DATABASE " + database
+                + " COLLATE SQL_Latin1_General_CP1_CI_AS");
+        DataSource upgrade = server.source(database);
+        var upgradeJdbc = new JdbcTemplate(upgrade);
+        Flyway through12 = Flyway.configure().dataSource(upgrade).defaultSchema("dbo").target("12")
+                .baselineOnMigrate(false).cleanDisabled(true).load();
+        assertEquals(12, through12.migrate().migrationsExecuted);
+        Integer checksum = upgradeJdbc.queryForObject(
+                "SELECT checksum FROM dbo.flyway_schema_history WHERE [version]='12'", Integer.class);
+        long now = Instant.parse("2026-11-03T12:00:00Z").toEpochMilli();
+        upgradeJdbc.update("""
+                INSERT INTO dbo.email_login_attempts(attempt_id,recipient,verifier,created_ms,expires_ms,failures,consumed,version)
+                VALUES (?,?,?,?,?,0,0,0)
+                """, "a".repeat(32), "ana@tec.ac.cr", "b".repeat(64), now, now + 600_000);
+        Flyway latest = Flyway.configure().dataSource(upgrade).defaultSchema("dbo")
+                .baselineOnMigrate(false).cleanDisabled(true).load();
+        latest.validate();
+        assertEquals(1, latest.migrate().migrationsExecuted);
+        assertEquals(checksum, upgradeJdbc.queryForObject(
+                "SELECT checksum FROM dbo.flyway_schema_history WHERE [version]='12'", Integer.class));
+        assertEquals("13", latest.info().current().getVersion().getVersion());
+        assertEquals(0, upgradeJdbc.queryForObject("SELECT COUNT(*) FROM dbo.email_login_attempts", Integer.class));
+        assertEquals(1, upgradeJdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys.columns WHERE object_id=OBJECT_ID('dbo.email_login_attempts')
+                  AND name='browser_hash' AND is_nullable=0
+                """, Integer.class));
+        assertEquals(1, upgradeJdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys.tables WHERE name='recent_attempt_identities'", Integer.class));
+        assertEquals(0, latest.migrate().migrationsExecuted);
+    }
+
+    private record LinkFixture(User owner, Session session, RecentAttempt current, RecentAttempt added,
+                               SessionAuthority sessions, RecentAuthenticationAuthority recent,
+                               ExternalIdentityKey held, java.util.concurrent.atomic.AtomicReference<Instant> time,
+                               ExternalIdentityKey googleKey) { }
+
+    private static final Instant LINK_NOW = Instant.parse("2026-11-03T12:00:00Z");
+
+    private LinkFixture linkFixture() {
+        User owner = user();
+        store.insert(owner);
+        var time = new java.util.concurrent.atomic.AtomicReference<>(LINK_NOW);
+        Clock moving = new Clock() {
+            public java.time.ZoneId getZone() { return ZoneOffset.UTC; }
+            public Clock withZone(java.time.ZoneId zone) { return this; }
+            public Instant instant() { return time.get(); }
+        };
+        var sessionRepo = new SqlSessionRepository(jdbc);
+        var attemptRepo = new SqlRecentAttemptRepository(jdbc);
+        var provenRepo = new SqlProvenIdentityRepository(jdbc);
+        Session session = Session.start(UUID.randomUUID().toString().replace("-", ""), owner.userId(), LINK_NOW);
+        var held = new ExternalIdentityKey(EmailLoginService.ISSUER, "held-" + UUID.randomUUID() + "@tec.ac.cr");
+        store.insertOrGet(new ExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, held, owner.userId(),
+                new Email("held@tec.ac.cr")));
+        RecentAttempt current = new RecentAttempt(UUID.randomUUID().toString().replace("-", ""), owner.userId(),
+                session.sessionId(), RecentAttempt.Method.INSTITUTIONAL_EMAIL, RecentProofService.LINK_CURRENT,
+                "GOOGLE", "a".repeat(64), LINK_NOW, LINK_NOW.plusSeconds(300), null, false, 0);
+        RecentAttempt added = new RecentAttempt(UUID.randomUUID().toString().replace("-", ""), owner.userId(),
+                session.sessionId(), RecentAttempt.Method.GOOGLE, RecentProofService.LINK_NEW,
+                "GOOGLE", "c".repeat(64), LINK_NOW, LINK_NOW.plusSeconds(300), null, false, 0);
+        store.execute(() -> {
+            sessionRepo.insert(session);
+            attemptRepo.insert(current);
+            attemptRepo.insert(added);
+            attemptRepo.replace(current, current.verifiedAt(LINK_NOW));
+            provenRepo.record(current.attemptId(), held);
+            return null;
+        });
+        var authority = new SessionAuthority(sessionRepo, store, store, store, moving,
+                new java.security.SecureRandom(), denySessionActions(), csrfKeys());
+        var recent = new RecentAuthenticationAuthority(authority, attemptRepo, moving, new java.security.SecureRandom());
+        return new LinkFixture(owner, session, current, added, authority, recent, held, time,
+                new ExternalIdentityKey("https://accounts.google.com", "sub-" + UUID.randomUUID()));
+    }
+
+    private AuthMethodsService linkService(LinkFixture f, Runnable duringVerification) {
+        com.markettec.users.application.ports.out.GoogleIdentityVerifier google = (token, context) -> {
+            duringVerification.run();
+            return new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(f.googleKey().issuer(),
+                    f.googleKey().subject(), "aud", LINK_NOW, LINK_NOW.plusSeconds(3600), new Email("ana@tec.ac.cr"));
+        };
+        return new AuthMethodsService(f.sessions(), f.recent(), store, store, google, "aud",
+                new SqlProvenIdentityRepository(jdbc));
+    }
+
+    private ExternalIdentity link(LinkFixture f, AuthMethodsService service) {
+        return service.link(f.session().sessionId(), f.owner().userId(), IdentityProvider.GOOGLE,
+                f.current().attemptId(), f.added().attemptId(), "credential");
+    }
+
+    private boolean consumed(RecentAttempt a) {
+        return jdbc.queryForObject("SELECT consumed FROM dbo.recent_authentication_attempts WHERE attempt_id=?",
+                Boolean.class, a.attemptId());
+    }
+
+    @Test
+    void concurrentLinksWithTheSameProofPairHaveExactlyOneWinner() throws Exception {
+        LinkFixture f = linkFixture();
+        var service = linkService(f, () -> { });
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var gate = new CountDownLatch(1);
+            Callable<Boolean> task = () -> {
+                gate.await();
+                try { return link(f, service) != null; }
+                catch (SessionRejectedException rejected) { return false; }
+            };
+            var first = pool.submit(task);
+            var second = pool.submit(task);
+            gate.countDown();
+            assertEquals(1, (first.get(30, TimeUnit.SECONDS) ? 1 : 0) + (second.get(30, TimeUnit.SECONDS) ? 1 : 0));
+        } finally { pool.shutdownNow(); }
+        assertEquals(f.owner().userId(), store.findByKey(f.googleKey()).orElseThrow().userId());
+        assertTrue(consumed(f.current()));
+        assertTrue(consumed(f.added()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE user_id=? AND provider='GOOGLE'",
+                Integer.class, f.owner().userId().value()));
+    }
+
+    @Test
+    void identityCollisionKeepsTheOriginalOwnerAndRollsBackBothProofs() {
+        LinkFixture f = linkFixture();
+        User other = User.create(new UuidUserIdGenerator().nextId(), new Email("beto@tec.ac.cr"),
+                new ProfileDetails("beto", "Beto", ""), photo, LINK_NOW);
+        store.insert(other);
+        store.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, f.googleKey(), other.userId(), new Email("beto@tec.ac.cr")));
+        reason(IDENTITY_CONFLICT, () -> link(f, linkService(f, () -> { })));
+        assertEquals(other.userId(), store.findByKey(f.googleKey()).orElseThrow().userId());
+        assertFalse(consumed(f.current()));
+        assertFalse(consumed(f.added()));
+        assertNull(jdbc.queryForObject("SELECT authenticated_ms FROM dbo.recent_authentication_attempts WHERE attempt_id=?",
+                Long.class, f.added().attemptId()));
+    }
+
+    @Test
+    void proofExpiringBeforeTheInsertCommitsNothing() {
+        LinkFixture f = linkFixture();
+        var service = linkService(f, () -> f.time().set(LINK_NOW.plusSeconds(300)));
+        assertThrows(SessionRejectedException.class, () -> link(f, service));
+        assertTrue(store.findByKey(f.googleKey()).isEmpty());
+        assertFalse(consumed(f.current()));
+        assertFalse(consumed(f.added()));
+    }
+
+    @Test
+    void disabledOrReassignedProvenIdentityIsRejected() {
+        LinkFixture f = linkFixture();
+        var service = linkService(f, () -> { });
+        var held = store.findByKey(f.held()).orElseThrow();
+        store.replaceStatus(held, IdentityLinkStatus.DISABLED);
+        assertThrows(SessionRejectedException.class, () -> link(f, service));
+        assertTrue(store.findByKey(f.googleKey()).isEmpty());
+        assertFalse(consumed(f.current()));
+        store.replaceStatus(store.findByKey(f.held()).orElseThrow(), IdentityLinkStatus.ACTIVE);
+        assertNotNull(link(f, service));
     }
 }

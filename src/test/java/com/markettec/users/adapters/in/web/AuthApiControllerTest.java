@@ -31,6 +31,7 @@ class AuthApiControllerTest {
     private final AuthMethodsService methods = mock(AuthMethodsService.class);
     private MockMvc mvc;
     private MockMvc withoutMethods;
+    private MockMvc linkingOff;
 
     @SuppressWarnings("unchecked")
     @BeforeEach void setup() {
@@ -39,8 +40,9 @@ class AuthApiControllerTest {
         ObjectProvider<AuthMethodsService> present = mock(ObjectProvider.class);
         when(present.getIfAvailable()).thenReturn(methods);
         ObjectProvider<AuthMethodsService> absent = mock(ObjectProvider.class);
-        mvc = MockMvcBuilders.standaloneSetup(new AuthApiController(jwt, sessions, proofs, present, clock)).build();
-        withoutMethods = MockMvcBuilders.standaloneSetup(new AuthApiController(jwt, sessions, proofs, absent, clock)).build();
+        mvc = MockMvcBuilders.standaloneSetup(new AuthApiController(jwt, sessions, proofs, present, clock, true)).build();
+        linkingOff = MockMvcBuilders.standaloneSetup(new AuthApiController(jwt, sessions, proofs, present, clock, false)).build();
+        withoutMethods = MockMvcBuilders.standaloneSetup(new AuthApiController(jwt, sessions, proofs, absent, clock, true)).build();
     }
 
     private MockHttpServletRequestBuilder post_(String path, String body) {
@@ -149,5 +151,34 @@ class AuthApiControllerTest {
         mvc.perform(post_("/v1/me/auth-methods", "{\"provider\":\"institutional_email\",\"currentAttemptId\":\"" + cur
                 + "\",\"newAttemptId\":\"" + neu + "\"}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("IDENTITY_CONFLICT"));
+    }
+
+    @Test void linkingStaysDisabledUntilTheProtocolIsApproved() throws Exception {
+        String id = "c".repeat(32), other = "9".repeat(32);
+        linkingOff.perform(post("/v1/me/auth-methods").header("Authorization", "Bearer good").header("X-CSRF-Token", CSRF)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"provider\":\"institutional_email\",\"currentAttemptId\":\""
+                        + id + "\",\"newAttemptId\":\"" + other + "\"}"))
+                .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.error.code").value("AUTH_TEMPORARILY_UNAVAILABLE"));
+        linkingOff.perform(post("/v1/me/auth-methods").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(methods);
+    }
+
+    @Test void invalidGoogleTokensAreContractualUnauthorizedWithoutInternals() throws Exception {
+        when(proofs.googleAvailable()).thenReturn(true);
+        doThrow(new com.markettec.users.adapters.out.google.InvalidGoogleTokenException())
+                .when(proofs).proveGoogle(SID, ME, ATTEMPT, "tok");
+        mvc.perform(post_("/v1/auth/proofs/google", "{\"attemptId\":\"" + ATTEMPT + "\",\"credential\":\"tok\"}"))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("AUTH_PROOF_INVALID"))
+                .andExpect(jsonPath("$.error.message").exists()).andExpect(jsonPath("$.error.details").isArray())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("Invalid Google"))));
+        String cur = "c".repeat(32), neu = "9".repeat(32);
+        when(methods.link(SID, ME, IdentityProvider.GOOGLE, cur, neu, "tok"))
+                .thenThrow(new com.markettec.users.adapters.out.google.InvalidGoogleTokenException());
+        mvc.perform(post_("/v1/me/auth-methods", "{\"provider\":\"google\",\"currentAttemptId\":\"" + cur
+                + "\",\"newAttemptId\":\"" + neu + "\",\"credential\":\"tok\"}"))
+                .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("AUTH_PROOF_INVALID"))
+                .andExpect(header().string("Cache-Control", "no-store"));
     }
 }

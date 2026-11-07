@@ -26,6 +26,10 @@ users:
   api:
     http:
       enabled: ${USERS_API_HTTP_ENABLED:false}
+      allowed-origins: ${USERS_API_HTTP_ALLOWED_ORIGINS:}
+  auth-methods:
+    linking:
+      enabled: ${USERS_AUTH_METHOD_LINKING_ENABLED:false}
   email:
     enabled: ${USERS_EMAIL_ENABLED:false}
     from: ${USERS_EMAIL_FROM:}

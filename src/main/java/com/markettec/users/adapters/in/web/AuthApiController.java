@@ -34,9 +34,12 @@ public final class AuthApiController {
     private final RecentProofService proofs;
     private final ObjectProvider<AuthMethodsService> methods;
     private final Clock clock;
+    private final boolean linkingEnabled;
 
     public AuthApiController(InternalTokenVerifier jwt, SessionAuthority sessions, RecentProofService proofs,
-                             ObjectProvider<AuthMethodsService> methods, Clock clock) {
+                             ObjectProvider<AuthMethodsService> methods, Clock clock,
+                             @org.springframework.beans.factory.annotation.Value("${users.auth-methods.linking.enabled:false}") boolean linkingEnabled) {
+        this.linkingEnabled = linkingEnabled;
         this.jwt = jwt;
         this.sessions = sessions;
         this.proofs = proofs;
@@ -124,6 +127,8 @@ public final class AuthApiController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> linkMethod(@RequestBody JsonNode body, HttpServletRequest request) {
         var token = mutating(request);
+        // Disabled until the interactive recent-authentication protocol (B04/B07) is approved.
+        if (!linkingEnabled) throw unavailable();
         boolean hasCredential = body != null && body.has("credential");
         if (body == null || !body.isObject() || !body.path("provider").isTextual()
                 || !body.path("currentAttemptId").isTextual() || !body.path("newAttemptId").isTextual()
@@ -184,7 +189,7 @@ public final class AuthApiController {
 
     @ExceptionHandler({GoogleAuthController.AuthHttpException.class, InvalidInternalJwtException.class,
             SessionRejectedException.class, UserDomainException.class, EmailDeliveryException.class,
-            IllegalArgumentException.class})
+            com.markettec.users.adapters.out.google.InvalidGoogleTokenException.class, IllegalArgumentException.class})
     public ResponseEntity<?> failed(Exception failure, HttpServletRequest request) {
         return ApiErrors.map(failure, request, clock);
     }

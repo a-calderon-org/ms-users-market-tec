@@ -20,6 +20,7 @@ public final class RecentProofService {
     private final RecentAuthenticationAuthority recent;
     private final RecentAttemptRepository attempts;
     private final EmailProofChallengeRepository challenges;
+    private final ProvenIdentityRepository proven;
     private final UserRepository users;
     private final ExternalIdentityRepository identities;
     private final GoogleIdentityVerifier google;
@@ -31,7 +32,8 @@ public final class RecentProofService {
     public RecentProofService(SessionAuthority sessions, RecentAuthenticationAuthority recent,
             RecentAttemptRepository attempts, EmailProofChallengeRepository challenges, UserRepository users,
             ExternalIdentityRepository identities, GoogleIdentityVerifier google, String googleAudience,
-            InstitutionalLinkSender sender, Clock clock, SecureRandom random) {
+            InstitutionalLinkSender sender, ProvenIdentityRepository proven, Clock clock, SecureRandom random) {
+        this.proven = Objects.requireNonNull(proven);
         this.sessions = Objects.requireNonNull(sessions);
         this.recent = Objects.requireNonNull(recent);
         this.attempts = Objects.requireNonNull(attempts);
@@ -93,6 +95,14 @@ public final class RecentProofService {
             if (!InstitutionalEmailProof.matches(recipient(userId), attempt, verifier, secret, now()))
                 throw new SessionRejectedException();
             challenges.markConsumed(attemptId);
+            if (LINK_CURRENT.equals(attempt.operation())) {
+                // The proof demonstrates control of THIS active email identity of the account.
+                var key = new ExternalIdentityKey(EmailLoginService.ISSUER, recipient(userId).normalized());
+                var link = identities.findByKey(key).orElseThrow(SessionRejectedException::new);
+                if (link.provider() != IdentityProvider.INSTITUTIONAL_EMAIL || !link.userId().equals(userId)
+                        || link.status() != IdentityLinkStatus.ACTIVE) throw new SessionRejectedException();
+                proven.record(attemptId, key);
+            }
             record(attempt, userId, sessionId);
             return null;
         });
@@ -113,6 +123,7 @@ public final class RecentProofService {
                     .orElseThrow(SessionRejectedException::new);
             if (linked.provider() != IdentityProvider.GOOGLE || linked.status() != IdentityLinkStatus.ACTIVE
                     || !linked.userId().equals(userId)) throw new SessionRejectedException();
+            proven.record(attemptId, new ExternalIdentityKey(verified.issuer(), verified.subject()));
             record(attempt, userId, sessionId);
             return null;
         });
