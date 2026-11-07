@@ -1,5 +1,5 @@
 {
-  "normal_count": 347,
+  "normal_count": 354,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -12,6 +12,7 @@
     "concurrentLinksWithTheSameProofPairHaveExactlyOneWinner",
     "concurrentRecentProofConsumersHaveOneCommit",
     "concurrentRegistrationsRetryWholeWorkWithoutOrphanAccounts",
+    "concurrentReplaysHaveOneWinnerAndTheLoserGetsTheDomainError",
     "concurrentSqlLogoutCommitsOneRevocation",
     "concurrentUpdatesHaveOneWinnerAndOneStaleWriter",
     "databaseEnforcesUniquenessAcrossProvidersWithoutAdapterLookup",
@@ -19,6 +20,7 @@
     "deactivationIsIdempotentAndKeepsIdentityReserved",
     "disabledOrReassignedProvenIdentityIsRejected",
     "duplicateIdCannotOverwriteUserOrProfile",
+    "duplicateRepositoryInsertsAreTranslatedToTheDomainErrorAndNothingElse",
     "errorReportedAfterRealCommitNeverReplaysCommittedWork",
     "failedAggregateUpdateRestoresProfileStatusAndVersion",
     "failedRecentPersistenceRollsBackSensitiveUnit",
@@ -55,6 +57,7 @@
     "rollsBackAllTablesAfterFailureFollowingAllWrites",
     "schemaValidationRejectsWrongDatabaseWithoutWriting",
     "sensitiveProfileCommitAndRevocationSerializeOnRealSqlServer",
+    "sequentialReplaysOfAGoogleProofAndAnEmailRequestAreDomainErrorsThatKeepTheOriginals",
     "sessionCreationRenewalAndExpiryPersistOnRealSqlServer",
     "sessionRevocationAndRenewalSerializeOnRealSqlServer",
     "sqlCsrfRecoverySurvivesRestartAndRejectsMissingLegacyAndExpiredKeys",

@@ -181,4 +181,18 @@ class AuthApiControllerTest {
                 .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error.code").value("AUTH_PROOF_INVALID"))
                 .andExpect(header().string("Cache-Control", "no-store"));
     }
+
+    @Test void repeatedProofsAreContractualConflictsNotServerErrors() throws Exception {
+        when(proofs.googleAvailable()).thenReturn(true);
+        when(proofs.emailAvailable()).thenReturn(true);
+        var replay = new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
+        doThrow(replay).when(proofs).proveGoogle(SID, ME, ATTEMPT, "tok");
+        doThrow(replay).when(proofs).requestEmail(SID, ME, ATTEMPT);
+        mvc.perform(post_("/v1/auth/proofs/google", "{\"attemptId\":\"" + ATTEMPT + "\",\"credential\":\"tok\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("ATTEMPT_CONSUMED"))
+                .andExpect(jsonPath("$.error.details").isArray()).andExpect(header().string("Cache-Control", "no-store"));
+        mvc.perform(post_("/v1/auth/proofs/email/requests", "{\"attemptId\":\"" + ATTEMPT + "\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("ATTEMPT_CONSUMED"))
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("dbo."))));
+    }
 }

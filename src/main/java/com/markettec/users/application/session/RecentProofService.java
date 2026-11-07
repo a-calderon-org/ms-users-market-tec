@@ -77,6 +77,7 @@ public final class RecentProofService {
         if (!emailAvailable()) throw new IllegalStateException("Email proofs are not configured");
         Object[] delivery = sessions.withCurrentSession(sessionId, userId, () -> {
             var attempt = bound(attemptId, sessionId, userId, RecentAttempt.Method.INSTITUTIONAL_EMAIL);
+            requireNotPresented(attempt);
             Email recipient = recipient(userId);
             requireEmailTarget(attempt, recipient);
             var issued = InstitutionalEmailProof.issue(recipient, attempt, now(), random);
@@ -117,6 +118,7 @@ public final class RecentProofService {
             var attempt = bound(attemptId, sessionId, userId, RecentAttempt.Method.GOOGLE);
             // A Google proof of the CURRENT method; proving a new Google identity happens at link time.
             if (!LINK_CURRENT.equals(attempt.operation())) throw new SessionRejectedException();
+            requireNotPresented(attempt);
             var verified = google.verify(credential, new GoogleVerificationContext(googleAudience, attempt.nonce()));
             if (verified == null || !googleAudience.equals(verified.audience())) throw new SessionRejectedException();
             var linked = identities.findByKey(new ExternalIdentityKey(verified.issuer(), verified.subject()))
@@ -127,6 +129,12 @@ public final class RecentProofService {
             record(attempt, userId, sessionId);
             return null;
         });
+    }
+
+    /** The attempt lock is held: a verified or spent attempt is a replay, reported as a domain error. */
+    private static void requireNotPresented(RecentAttempt attempt) {
+        if (attempt.authenticatedAt() != null || attempt.consumed())
+            throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
     }
 
     /** An email proof for a new identity is valid only for the address named in its target. */

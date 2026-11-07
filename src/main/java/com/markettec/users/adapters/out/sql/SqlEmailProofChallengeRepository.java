@@ -12,8 +12,14 @@ public final class SqlEmailProofChallengeRepository implements EmailProofChallen
 
     @Override public void insert(String attemptId, String verifier) {
         requireTransaction();
-        jdbc.update("INSERT INTO dbo.email_proof_challenges(attempt_id,verifier,consumed) VALUES (?,?,0)",
-                attemptId, verifier);
+        try {
+            jdbc.update("INSERT INTO dbo.email_proof_challenges(attempt_id,verifier,consumed) VALUES (?,?,0)",
+                    attemptId, verifier);
+        } catch (org.springframework.dao.DuplicateKeyException replay) {
+            // The attempt already has its single link; the original challenge is left untouched.
+            throw new com.markettec.users.application.session.SessionRejectedException(
+                    com.markettec.users.application.session.SessionRejectedException.Reason.ATTEMPT_CONSUMED);
+        }
     }
 
     @Override public Optional<String> loadOpenLocked(String attemptId) {

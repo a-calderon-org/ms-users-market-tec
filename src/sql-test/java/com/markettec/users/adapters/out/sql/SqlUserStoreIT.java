@@ -2095,4 +2095,117 @@ class SqlUserStoreIT {
         store.replaceStatus(store.findByKey(f.held()).orElseThrow(), IdentityLinkStatus.ACTIVE);
         assertNotNull(link(f, service));
     }
+
+    // ---- Replayed recent proofs: domain errors, never integrity exceptions ----------------------------
+
+    private record ProofFixture(User owner, Session session, RecentProofService proofs, RecentAttempt email,
+                                RecentAttempt google, List<String[]> sent) { }
+
+    private ProofFixture proofFixture() {
+        Email tec = new Email("p" + UUID.randomUUID().toString().substring(0, 8) + "@tec.ac.cr");
+        User owner = User.create(new UuidUserIdGenerator().nextId(), tec, details, photo, LINK_NOW);
+        store.insert(owner);
+        var googleKey = new ExternalIdentityKey("https://accounts.google.com", "sub-" + UUID.randomUUID());
+        store.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, googleKey, owner.userId(), tec));
+        Clock fixed = Clock.fixed(LINK_NOW, ZoneOffset.UTC);
+        var sessionRepo = new SqlSessionRepository(jdbc);
+        var attemptRepo = new SqlRecentAttemptRepository(jdbc);
+        Session session = Session.start(UUID.randomUUID().toString().replace("-", ""), owner.userId(), LINK_NOW);
+        store.execute(() -> { sessionRepo.insert(session); return null; });
+        var authority = new SessionAuthority(sessionRepo, store, store, store, fixed,
+                new java.security.SecureRandom(), denySessionActions(), csrfKeys());
+        var recent = new RecentAuthenticationAuthority(authority, attemptRepo, fixed, new java.security.SecureRandom());
+        var sent = java.util.Collections.synchronizedList(new java.util.ArrayList<String[]>());
+        com.markettec.users.application.ports.out.GoogleIdentityVerifier verifier = (token, context) ->
+                new com.markettec.users.application.ports.out.VerifiedGoogleIdentity(googleKey.issuer(),
+                        googleKey.subject(), "aud", LINK_NOW, LINK_NOW.plusSeconds(3600), tec);
+        var proofs = new RecentProofService(authority, recent, attemptRepo, new SqlEmailProofChallengeRepository(jdbc),
+                store, store, verifier, "aud", (to, id, secret) -> sent.add(new String[]{to.address(), id}),
+                new SqlProvenIdentityRepository(jdbc), fixed, new java.security.SecureRandom());
+        var email = proofs.begin(session.sessionId(), owner.userId(), RecentAttempt.Method.INSTITUTIONAL_EMAIL,
+                RecentProofService.LINK_CURRENT, "GOOGLE");
+        var google = proofs.begin(session.sessionId(), owner.userId(), RecentAttempt.Method.GOOGLE,
+                RecentProofService.LINK_CURRENT, "INSTITUTIONAL_EMAIL");
+        return new ProofFixture(owner, session, proofs, email, google, sent);
+    }
+
+    private int rows(String table, String attemptId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM dbo." + table + " WHERE attempt_id=?", Integer.class, attemptId);
+    }
+
+    @Test
+    void sequentialReplaysOfAGoogleProofAndAnEmailRequestAreDomainErrorsThatKeepTheOriginals() {
+        ProofFixture f = proofFixture();
+        String sid = f.session().sessionId();
+        UserId uid = f.owner().userId();
+        f.proofs().proveGoogle(sid, uid, f.google().attemptId(), "credential");
+        Long authenticated = jdbc.queryForObject("SELECT authenticated_ms FROM dbo.recent_authentication_attempts WHERE attempt_id=?",
+                Long.class, f.google().attemptId());
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, assertThrows(SessionRejectedException.class,
+                () -> f.proofs().proveGoogle(sid, uid, f.google().attemptId(), "credential")).reason());
+        assertEquals(1, rows("recent_attempt_identities", f.google().attemptId()));
+        assertEquals(authenticated, jdbc.queryForObject("SELECT authenticated_ms FROM dbo.recent_authentication_attempts WHERE attempt_id=?",
+                Long.class, f.google().attemptId()));
+
+        f.proofs().requestEmail(sid, uid, f.email().attemptId());
+        String verifier = jdbc.queryForObject("SELECT verifier FROM dbo.email_proof_challenges WHERE attempt_id=?",
+                String.class, f.email().attemptId());
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, assertThrows(SessionRejectedException.class,
+                () -> f.proofs().requestEmail(sid, uid, f.email().attemptId())).reason());
+        assertEquals(1, rows("email_proof_challenges", f.email().attemptId()));
+        assertEquals(verifier, jdbc.queryForObject("SELECT verifier FROM dbo.email_proof_challenges WHERE attempt_id=?",
+                String.class, f.email().attemptId()));
+        assertEquals(1, f.sent().size());
+    }
+
+    @Test
+    void duplicateRepositoryInsertsAreTranslatedToTheDomainErrorAndNothingElse() {
+        ProofFixture f = proofFixture();
+        var proven = new SqlProvenIdentityRepository(jdbc);
+        var challenges = new SqlEmailProofChallengeRepository(jdbc);
+        var key = new ExternalIdentityKey("https://accounts.google.com", "dup-" + UUID.randomUUID());
+        store.execute(() -> { proven.record(f.google().attemptId(), key); return null; });
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, assertThrows(SessionRejectedException.class,
+                () -> store.execute(() -> { proven.record(f.google().attemptId(), key); return null; })).reason());
+        store.execute(() -> { challenges.insert(f.email().attemptId(), "a".repeat(64)); return null; });
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, assertThrows(SessionRejectedException.class,
+                () -> store.execute(() -> { challenges.insert(f.email().attemptId(), "b".repeat(64)); return null; })).reason());
+        assertEquals("a".repeat(64), jdbc.queryForObject("SELECT verifier FROM dbo.email_proof_challenges WHERE attempt_id=?",
+                String.class, f.email().attemptId()));
+        // a different integrity failure (orphan attempt id) is NOT reported as a replay
+        assertThrows(DataIntegrityViolationException.class, () -> store.execute(() -> {
+            proven.record("f".repeat(32), key); return null; }));
+    }
+
+    @Test
+    void concurrentReplaysHaveOneWinnerAndTheLoserGetsTheDomainError() throws Exception {
+        ProofFixture f = proofFixture();
+        String sid = f.session().sessionId();
+        UserId uid = f.owner().userId();
+        for (int round = 0; round < 2; round++) {
+            boolean email = round == 0;
+            var pool = Executors.newFixedThreadPool(2);
+            try {
+                var gate = new CountDownLatch(1);
+                Callable<Boolean> task = () -> {
+                    gate.await();
+                    try {
+                        if (email) f.proofs().requestEmail(sid, uid, f.email().attemptId());
+                        else f.proofs().proveGoogle(sid, uid, f.google().attemptId(), "credential");
+                        return true;
+                    } catch (SessionRejectedException replay) {
+                        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, replay.reason());
+                        return false;
+                    }
+                };
+                var first = pool.submit(task);
+                var second = pool.submit(task);
+                gate.countDown();
+                assertEquals(1, (first.get(30, TimeUnit.SECONDS) ? 1 : 0) + (second.get(30, TimeUnit.SECONDS) ? 1 : 0));
+            } finally { pool.shutdownNow(); }
+        }
+        assertEquals(1, rows("email_proof_challenges", f.email().attemptId()));
+        assertEquals(1, rows("recent_attempt_identities", f.google().attemptId()));
+        assertEquals(1, f.sent().size());
+    }
 }

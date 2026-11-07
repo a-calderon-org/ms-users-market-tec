@@ -13,8 +13,14 @@ public final class SqlProvenIdentityRepository implements ProvenIdentityReposito
 
     @Override public void record(String attemptId, ExternalIdentityKey key) {
         requireTransaction();
-        jdbc.update("INSERT INTO dbo.recent_attempt_identities(attempt_id,issuer,subject) VALUES (?,?,?)",
-                attemptId, key.issuer(), key.subject());
+        try {
+            jdbc.update("INSERT INTO dbo.recent_attempt_identities(attempt_id,issuer,subject) VALUES (?,?,?)",
+                    attemptId, key.issuer(), key.subject());
+        } catch (org.springframework.dao.DuplicateKeyException replay) {
+            // Only a repeated primary key means the proof was already presented; nothing else is translated.
+            throw new com.markettec.users.application.session.SessionRejectedException(
+                    com.markettec.users.application.session.SessionRejectedException.Reason.ATTEMPT_CONSUMED);
+        }
     }
 
     @Override public Optional<ExternalIdentityKey> find(String attemptId) {

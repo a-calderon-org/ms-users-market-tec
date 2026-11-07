@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
+import org.springframework.http.server.PathContainer;
+import org.springframework.http.server.RequestPath;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
@@ -42,7 +44,35 @@ public final class ProtectedApiCorsFilter extends OncePerRequestFilter {
 
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
             FilterChain chain) throws ServletException, IOException {
-        var allowedMethods = methods(request.getRequestURI());
+        // Spring MVC matches decoded segments with path parameters removed. Resolve exactly that form,
+        // and refuse any protected route reached through a different spelling (no second decoding).
+        String raw;
+        String canonical;
+        try {
+            RequestPath parsed = RequestPath.parse(request.getRequestURI(), request.getContextPath());
+            raw = parsed.pathWithinApplication().value();
+            var spelled = new StringBuilder();
+            for (PathContainer.Element element : parsed.pathWithinApplication().elements()) {
+                spelled.append(element instanceof PathContainer.PathSegment segment
+                        ? segment.valueToMatch() : element.value());
+            }
+            canonical = spelled.toString();
+        } catch (RuntimeException malformed) {
+            raw = request.getRequestURI();
+            canonical = "";
+        }
+        var allowedMethods = methods(canonical);
+        if (!allowedMethods.isEmpty() && !raw.equals(canonical)) {
+            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+            response.setHeader("Cache-Control", "no-store");
+            response.setContentType("application/json");
+            Object correlation = request.getAttribute(CorrelationIdFilter.ATTRIBUTE_NAME);
+            response.getWriter().write("{\"error\":{\"code\":\"INVALID_REQUEST\",\"message\":"
+                    + "\"No se pudo completar la operación.\",\"details\":[],\"correlationId\":"
+                    + (correlation == null ? "null" : "\"" + correlation.toString().replaceAll("[^A-Za-z0-9._-]", "") + "\"")
+                    + ",\"timestamp\":" + (System.currentTimeMillis() / 1000) + "}}");
+            return;
+        }
         String origin = request.getHeader("Origin");
         if (allowedMethods.isEmpty() || origin == null) {
             chain.doFilter(request, response);

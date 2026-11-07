@@ -43,7 +43,8 @@ class RecentProofAndMethodsServiceTest {
     };
     private final EmailProofChallengeRepository repo = new EmailProofChallengeRepository() {
         public void insert(String id, String verifier) {
-            if (challenges.putIfAbsent(id, new String[]{verifier, "open"}) != null) throw new IllegalStateException("dup");
+            if (challenges.putIfAbsent(id, new String[]{verifier, "open"}) != null)
+                throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
         }
         public Optional<String> loadOpenLocked(String id) {
             var c = challenges.get(id);
@@ -74,7 +75,8 @@ class RecentProofAndMethodsServiceTest {
     };
     private final ProvenIdentityRepository proven = new ProvenIdentityRepository() {
         public void record(String attemptId, ExternalIdentityKey key) {
-            if (provenMap.putIfAbsent(attemptId, key) != null) throw new IllegalStateException("dup");
+            if (provenMap.putIfAbsent(attemptId, key) != null)
+                throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
         }
         public Optional<ExternalIdentityKey> find(String attemptId) { return Optional.ofNullable(provenMap.get(attemptId)); }
     };
@@ -156,7 +158,8 @@ class RecentProofAndMethodsServiceTest {
         proofs.requestEmail(SID, user, a.attemptId());
         var link = sent.get(0);
         assertNotEquals(link[2], challenges.get(a.attemptId())[0]);
-        assertThrows(IllegalStateException.class, () -> proofs.requestEmail(SID, user, a.attemptId()));
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, assertThrows(SessionRejectedException.class,
+                () -> proofs.requestEmail(SID, user, a.attemptId())).reason());
         assertThrows(SessionRejectedException.class, () -> proofs.confirmEmail(SID, user, other.attemptId(), link[2]));
         assertThrows(SessionRejectedException.class, () -> proofs.confirmEmail(SID, user, a.attemptId(), "f".repeat(64)));
         proofs.confirmEmail(SID, user, a.attemptId(), link[2]);
@@ -326,5 +329,35 @@ class RecentProofAndMethodsServiceTest {
         assertFalse(data.get(cur.attemptId()).consumed());
         assertFalse(data.get(neu.attemptId()).consumed());
         assertEquals(stranger, ids.findByKey(googleKey).orElseThrow().userId());
+    }
+
+    @Test void presentingTheSameGoogleProofTwiceIsAConsumedErrorAndKeepsTheOriginalProof() {
+        ids.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, googleKey, user, email));
+        var a = proofs.begin(SID, user, RecentAttempt.Method.GOOGLE, RecentProofService.LINK_CURRENT, "INSTITUTIONAL_EMAIL");
+        proofs.proveGoogle(SID, user, a.attemptId(), "nonce:" + a.nonce());
+        var firstEvent = data.get(a.attemptId()).authenticatedAt();
+        var firstIdentity = provenMap.get(a.attemptId());
+        time.set(START.plusSeconds(5));
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, assertThrows(SessionRejectedException.class,
+                () -> proofs.proveGoogle(SID, user, a.attemptId(), "nonce:" + a.nonce())).reason());
+        assertEquals(firstEvent, data.get(a.attemptId()).authenticatedAt());
+        assertEquals(firstIdentity, provenMap.get(a.attemptId()));
+        assertFalse(data.get(a.attemptId()).consumed());
+    }
+
+    @Test void requestingTheEmailProofTwiceSendsOneLinkAndKeepsTheFirstChallenge() {
+        linkEmailIdentity();
+        var a = currentEmailAttempt();
+        proofs.requestEmail(SID, user, a.attemptId());
+        String verifier = challenges.get(a.attemptId())[0];
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, assertThrows(SessionRejectedException.class,
+                () -> proofs.requestEmail(SID, user, a.attemptId())).reason());
+        assertEquals(1, sent.size());
+        assertEquals(verifier, challenges.get(a.attemptId())[0]);
+        proofs.confirmEmail(SID, user, a.attemptId(), sent.get(0)[2]);
+        // a verified attempt can no longer be asked for another link
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, assertThrows(SessionRejectedException.class,
+                () -> proofs.requestEmail(SID, user, a.attemptId())).reason());
+        assertEquals(1, sent.size());
     }
 }
