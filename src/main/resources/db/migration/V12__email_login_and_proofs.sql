@@ -4,6 +4,7 @@ CREATE TABLE dbo.email_login_attempts (
     attempt_id char(32) COLLATE Latin1_General_100_BIN2 NOT NULL,
     recipient varchar(254) COLLATE Latin1_General_100_BIN2 NOT NULL,
     verifier char(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+    browser_hash char(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
     created_ms bigint NOT NULL,
     expires_ms bigint NOT NULL,
     failures int NOT NULL CONSTRAINT df_email_login_failures DEFAULT 0,

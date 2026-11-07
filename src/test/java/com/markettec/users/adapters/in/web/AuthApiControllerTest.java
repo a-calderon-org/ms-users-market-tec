@@ -65,27 +65,25 @@ class AuthApiControllerTest {
         verifyNoInteractions(proofs, methods);
     }
 
-    @Test void activityUsesTheTokenSessionOnly() throws Exception {
-        var session = Session.start(SID, ME, NOW);
-        when(sessions.recordAdmissibleActivity(SID)).thenReturn(session);
+    @Test void activityIsRefusedAfterAuthenticationAndNeverTouchesTheSession() throws Exception {
         mvc.perform(post("/v1/auth/session/activity").header("Authorization", "Bearer good").header("X-CSRF-Token", CSRF))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.sessionId").value(SID))
-                .andExpect(jsonPath("$.expiresAt").value(session.deadline().getEpochSecond()));
-        verify(sessions).requireCsrf(SID, ME, CSRF);
-        doThrow(new SessionRejectedException()).when(sessions).recordAdmissibleActivity(SID);
-        mvc.perform(post("/v1/auth/session/activity").header("Authorization", "Bearer good").header("X-CSRF-Token", CSRF))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("ACTIVITY_EVIDENCE_REQUIRED"));
+        mvc.perform(post("/v1/auth/session/activity").header("Authorization", "Bearer good")
+                .header("X-CSRF-Token", CSRF).contentType(MediaType.APPLICATION_JSON).content("{\"active\":true}"))
+                .andExpect(status().isForbidden());
+        verify(sessions, never()).recordAdmissibleActivity(any());
+        verify(sessions, never()).renew(any());
     }
 
     @Test void proofAttemptMapsMethodsAndRejectsUnknownOnes() throws Exception {
-        var attempt = new RecentAttempt(ATTEMPT, ME, SID, RecentAttempt.Method.INSTITUTIONAL_EMAIL, "LINK_IDENTITY",
+        var attempt = new RecentAttempt(ATTEMPT, ME, SID, RecentAttempt.Method.INSTITUTIONAL_EMAIL, "LINK_IDENTITY_CURRENT",
                 "GOOGLE", "e".repeat(64), NOW, NOW.plusSeconds(300), null, false, 0);
-        when(proofs.begin(SID, ME, RecentAttempt.Method.INSTITUTIONAL_EMAIL, "LINK_IDENTITY", "GOOGLE")).thenReturn(attempt);
+        when(proofs.begin(SID, ME, RecentAttempt.Method.INSTITUTIONAL_EMAIL, "LINK_IDENTITY_CURRENT", "GOOGLE")).thenReturn(attempt);
         mvc.perform(post_("/v1/auth/proofs/attempts",
-                "{\"method\":\"institutional_email\",\"operation\":\"LINK_IDENTITY\",\"target\":\"GOOGLE\"}"))
+                "{\"method\":\"institutional_email\",\"operation\":\"LINK_IDENTITY_CURRENT\",\"target\":\"GOOGLE\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.attemptId").value(ATTEMPT))
                 .andExpect(jsonPath("$.nonce").value("e".repeat(64))).andExpect(jsonPath("$.expiresAt").value(NOW.getEpochSecond() + 300));
-        mvc.perform(post_("/v1/auth/proofs/attempts", "{\"method\":\"sms\",\"operation\":\"LINK_IDENTITY\",\"target\":\"GOOGLE\"}"))
+        mvc.perform(post_("/v1/auth/proofs/attempts", "{\"method\":\"sms\",\"operation\":\"LINK_IDENTITY_CURRENT\",\"target\":\"GOOGLE\"}"))
                 .andExpect(status().isBadRequest());
         when(proofs.begin(any(), any(), any(), eq("DELETE"), any())).thenThrow(new SessionRejectedException());
         mvc.perform(post_("/v1/auth/proofs/attempts", "{\"method\":\"google\",\"operation\":\"DELETE\",\"target\":\"x\"}"))
@@ -130,20 +128,26 @@ class AuthApiControllerTest {
         mvc.perform(get("/v1/me/auth-methods")).andExpect(status().isUnauthorized());
     }
 
-    @Test void linkingValidatesShapePerProviderAndMapsConflicts() throws Exception {
+    @Test void linkingNeedsTwoDistinctProofsAndTheRightShapePerProvider() throws Exception {
+        String cur = "c".repeat(32), neu = "9".repeat(32);
         var email = new Email("ana@tec.ac.cr");
         var linked = new ExternalIdentity(IdentityProvider.GOOGLE, new ExternalIdentityKey("i", "s"), ME, email);
-        when(methods.link(SID, ME, IdentityProvider.GOOGLE, ATTEMPT, "tok")).thenReturn(linked);
-        mvc.perform(post_("/v1/me/auth-methods", "{\"provider\":\"google\",\"attemptId\":\"" + ATTEMPT + "\",\"credential\":\"tok\"}"))
+        when(methods.link(SID, ME, IdentityProvider.GOOGLE, cur, neu, "tok")).thenReturn(linked);
+        mvc.perform(post_("/v1/me/auth-methods", "{\"provider\":\"google\",\"currentAttemptId\":\"" + cur
+                + "\",\"newAttemptId\":\"" + neu + "\",\"credential\":\"tok\"}"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.provider").value("google"));
-        for (String bad : new String[]{"{\"provider\":\"google\",\"attemptId\":\"" + ATTEMPT + "\"}",
-                "{\"provider\":\"institutional_email\",\"attemptId\":\"" + ATTEMPT + "\",\"credential\":\"tok\"}",
-                "{\"provider\":\"facebook\",\"attemptId\":\"" + ATTEMPT + "\"}", "{\"provider\":\"google\"}",
-                "{\"provider\":\"google\",\"attemptId\":\"bad\",\"credential\":\"t\"}"})
+        for (String bad : new String[]{
+                "{\"provider\":\"google\",\"currentAttemptId\":\"" + cur + "\",\"newAttemptId\":\"" + neu + "\"}",
+                "{\"provider\":\"institutional_email\",\"currentAttemptId\":\"" + cur + "\",\"newAttemptId\":\"" + neu + "\",\"credential\":\"t\"}",
+                "{\"provider\":\"google\",\"attemptId\":\"" + cur + "\",\"credential\":\"t\"}",
+                "{\"provider\":\"google\",\"currentAttemptId\":\"" + cur + "\",\"newAttemptId\":\"" + cur + "\",\"credential\":\"t\"}",
+                "{\"provider\":\"facebook\",\"currentAttemptId\":\"" + cur + "\",\"newAttemptId\":\"" + neu + "\"}",
+                "{\"provider\":\"google\",\"currentAttemptId\":\"bad\",\"newAttemptId\":\"" + neu + "\",\"credential\":\"t\"}"})
             mvc.perform(post_("/v1/me/auth-methods", bad)).andExpect(status().isBadRequest());
-        when(methods.link(SID, ME, IdentityProvider.INSTITUTIONAL_EMAIL, ATTEMPT, null))
+        when(methods.link(SID, ME, IdentityProvider.INSTITUTIONAL_EMAIL, cur, neu, null))
                 .thenThrow(new UserDomainException(UserDomainException.Reason.IDENTITY_CONFLICT));
-        mvc.perform(post_("/v1/me/auth-methods", "{\"provider\":\"institutional_email\",\"attemptId\":\"" + ATTEMPT + "\"}"))
+        mvc.perform(post_("/v1/me/auth-methods", "{\"provider\":\"institutional_email\",\"currentAttemptId\":\"" + cur
+                + "\",\"newAttemptId\":\"" + neu + "\"}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("IDENTITY_CONFLICT"));
     }
 }

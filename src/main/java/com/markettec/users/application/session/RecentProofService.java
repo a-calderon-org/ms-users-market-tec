@@ -10,8 +10,11 @@ import java.util.Set;
 
 /** Recent-authentication proofs for an already authenticated session. Never creates sessions. */
 public final class RecentProofService {
-    public static final String LINK_OPERATION = "LINK_IDENTITY";
-    public static final Set<String> LINK_TARGETS = Set.of("GOOGLE", "INSTITUTIONAL_EMAIL");
+    /** Proof of control of the method the account already uses; target is the provider being added. */
+    public static final String LINK_CURRENT = "LINK_IDENTITY_CURRENT";
+    /** Proof of control of the method being added; target names the exact identity (email) or provider. */
+    public static final String LINK_NEW = "LINK_IDENTITY_NEW";
+    public static final String EMAIL_TARGET_PREFIX = "INSTITUTIONAL_EMAIL:";
 
     private final SessionAuthority sessions;
     private final RecentAuthenticationAuthority recent;
@@ -48,15 +51,24 @@ public final class RecentProofService {
     /** Allowlisted operation/method/target combinations only. */
     public RecentAttempt begin(String sessionId, UserId userId, RecentAttempt.Method method,
                                String operation, String target) {
-        boolean ok = switch (method) {
-            case INSTITUTIONAL_EMAIL -> (LINK_OPERATION.equals(operation) && "GOOGLE".equals(target))
-                    || ("DEACTIVATE_USER".equals(operation) && userId.value().equals(target));
-            case GOOGLE -> LINK_OPERATION.equals(operation) && "INSTITUTIONAL_EMAIL".equals(target);
-            case PASSKEY -> false;
+        if (method == null || operation == null || target == null) throw new SessionRejectedException();
+        boolean ok = switch (operation) {
+            case "DEACTIVATE_USER" -> method == RecentAttempt.Method.INSTITUTIONAL_EMAIL
+                    && userId.value().equals(target);
+            // Adding Google is authorized by the account's email; adding email by its Google.
+            case LINK_CURRENT -> ("GOOGLE".equals(target) && method == RecentAttempt.Method.INSTITUTIONAL_EMAIL)
+                    || ("INSTITUTIONAL_EMAIL".equals(target) && method == RecentAttempt.Method.GOOGLE);
+            case LINK_NEW -> ("GOOGLE".equals(target) && method == RecentAttempt.Method.GOOGLE)
+                    || (method == RecentAttempt.Method.INSTITUTIONAL_EMAIL
+                        && target.equals(EMAIL_TARGET_PREFIX + ownEmail(userId).normalized()));
+            default -> false;
         };
         if (!ok) throw new SessionRejectedException();
         return recent.begin(sessionId, userId, method, operation, target);
     }
+
+    private Email ownEmail(UserId userId) { return users.findById(userId).map(u -> u.profile().correo())
+            .orElseThrow(SessionRejectedException::new); }
 
     /** Issues the one-use link to the account's own verified institutional address. */
     public void requestEmail(String sessionId, UserId userId, String attemptId) {
@@ -64,6 +76,7 @@ public final class RecentProofService {
         Object[] delivery = sessions.withCurrentSession(sessionId, userId, () -> {
             var attempt = bound(attemptId, sessionId, userId, RecentAttempt.Method.INSTITUTIONAL_EMAIL);
             Email recipient = recipient(userId);
+            requireEmailTarget(attempt, recipient);
             var issued = InstitutionalEmailProof.issue(recipient, attempt, now(), random);
             challenges.insert(attemptId, issued.verifier());
             return new Object[]{recipient, issued.secret()};
@@ -76,6 +89,7 @@ public final class RecentProofService {
         sessions.withCurrentSession(sessionId, userId, () -> {
             var attempt = bound(attemptId, sessionId, userId, RecentAttempt.Method.INSTITUTIONAL_EMAIL);
             String verifier = challenges.loadOpenLocked(attemptId).orElseThrow(SessionRejectedException::new);
+            requireEmailTarget(attempt, recipient(userId));
             if (!InstitutionalEmailProof.matches(recipient(userId), attempt, verifier, secret, now()))
                 throw new SessionRejectedException();
             challenges.markConsumed(attemptId);
@@ -91,6 +105,8 @@ public final class RecentProofService {
             throw new SessionRejectedException();
         sessions.withCurrentSession(sessionId, userId, () -> {
             var attempt = bound(attemptId, sessionId, userId, RecentAttempt.Method.GOOGLE);
+            // A Google proof of the CURRENT method; proving a new Google identity happens at link time.
+            if (!LINK_CURRENT.equals(attempt.operation())) throw new SessionRejectedException();
             var verified = google.verify(credential, new GoogleVerificationContext(googleAudience, attempt.nonce()));
             if (verified == null || !googleAudience.equals(verified.audience())) throw new SessionRejectedException();
             var linked = identities.findByKey(new ExternalIdentityKey(verified.issuer(), verified.subject()))
@@ -100,6 +116,13 @@ public final class RecentProofService {
             record(attempt, userId, sessionId);
             return null;
         });
+    }
+
+    /** An email proof for a new identity is valid only for the address named in its target. */
+    private static void requireEmailTarget(RecentAttempt attempt, Email recipient) {
+        if (LINK_NEW.equals(attempt.operation())
+                && !attempt.target().equals(EMAIL_TARGET_PREFIX + recipient.normalized()))
+            throw new SessionRejectedException();
     }
 
     private void record(RecentAttempt attempt, UserId userId, String sessionId) {

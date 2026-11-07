@@ -50,7 +50,9 @@ class UserProfileControllerTest {
     @Test void ownProfileComesFromTheVerifiedSubjectAndIgnoresSpoofedHeaders() throws Exception {
         when(ops.getOwnProfile("good", ME)).thenReturn(profile);
         mvc.perform(get("/v1/me/profile").header("Authorization", "Bearer good").header("X-User-Id", OTHER.value()))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.userId").value(ME.value()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(ME.value())).andExpect(jsonPath("$.estado").value("activo"))
+                .andExpect(jsonPath("$.userId").doesNotExist()).andExpect(jsonPath("$.fechaActualizacion").doesNotExist())
+                .andExpect(jsonPath("$.message").doesNotExist()).andExpect(jsonPath("$.createdAt").value(NOW.getEpochSecond()))
                 .andExpect(jsonPath("$.correo").value("ana@tec.ac.cr")).andExpect(jsonPath("$.verificado").value(true))
                 .andExpect(jsonPath("$.nombreUsuario").value("ana")).andExpect(header().string("Cache-Control", "no-store"));
         verify(ops).getOwnProfile("good", ME);
@@ -59,7 +61,7 @@ class UserProfileControllerTest {
     @Test void otherUsersAreForbiddenAndMalformedIdsRejectedBeforeAnyRead() throws Exception {
         mvc.perform(get("/v1/usuarios/" + OTHER.value()).header("Authorization", "Bearer good")).andExpect(status().isForbidden());
         mvc.perform(put("/v1/usuarios/" + OTHER.value()).header("Authorization", "Bearer good")
-                .contentType(MediaType.APPLICATION_JSON).content("{\"nombre\":\"X\"}")).andExpect(status().isForbidden());
+                .contentType(MediaType.APPLICATION_JSON).content("{\"nombreUsuario\":\"x\",\"nombre\":\"X\",\"apellidos\":\"\"}")).andExpect(status().isForbidden());
         mvc.perform(get("/v1/usuarios/not-an-id").header("Authorization", "Bearer good")).andExpect(status().isBadRequest());
         mvc.perform(get("/v1/usuarios/" + ME.value())).andExpect(status().isUnauthorized());
         verifyNoInteractions(ops);
@@ -71,24 +73,28 @@ class UserProfileControllerTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.apellidos").value("Mora"));
     }
 
-    @Test void updateChangesOnlyAllowedFieldsAndKeepsTheRest() throws Exception {
-        when(ops.getOwnProfile("good", ME)).thenReturn(profile);
+    @Test void updateReturnsTheContractResponseWithMessageAndUpdateDate() throws Exception {
+        var later = NOW.plusSeconds(60);
         when(ops.updateOwnProfile(eq("good"), eq(ME), any())).thenAnswer(call -> new UserProfile(ME,
-                call.getArgument(2), profile.correo(), profile.fotoPerfil(), NOW, NOW, true));
-        mvc.perform(put("/v1/me/profile").header("Authorization", "Bearer good")
-                .contentType(MediaType.APPLICATION_JSON).content("{\"nombre\":\"Ana Maria\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.nombre").value("Ana Maria"))
-                .andExpect(jsonPath("$.apellidos").value("Mora")).andExpect(jsonPath("$.correo").value("ana@tec.ac.cr"));
+                call.getArgument(2), profile.correo(), profile.fotoPerfil(), NOW, later, true));
+        mvc.perform(put("/v1/me/profile").header("Authorization", "Bearer good").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"nombreUsuario\":\"ana\",\"nombre\":\"Ana Maria\",\"apellidos\":\"Mora\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.id").value(ME.value()))
+                .andExpect(jsonPath("$.nombre").value("Ana Maria")).andExpect(jsonPath("$.estado").value("activo"))
+                .andExpect(jsonPath("$.message").value("Perfil actualizado"))
+                .andExpect(jsonPath("$.fechaActualizacion").value(later.toString()))
+                .andExpect(jsonPath("$.fechaRegistro").value(NOW.toString())).andExpect(jsonPath("$.userId").doesNotExist());
         verify(ops).updateOwnProfile("good", ME, new ProfileDetails("ana", "Ana Maria", "Mora"));
     }
 
-    @Test void updateRejectsForbiddenFieldsEmptyBodiesAndInvalidValues() throws Exception {
-        for (String body : new String[]{"{\"correo\":\"x@tec.ac.cr\"}", "{\"verificado\":true}", "{\"userId\":\"" + OTHER.value() + "\"}",
-                "{}", "[]", "{\"nombre\":5}", "{\"nombre\":\"\"}"}) {
-            when(ops.getOwnProfile("good", ME)).thenReturn(profile);
+    @Test void updateRequiresExactlyTheThreeEditableFields() throws Exception {
+        for (String body : new String[]{"{\"nombre\":\"Ana\"}", "{\"nombreUsuario\":\"a\",\"nombre\":\"A\"}",
+                "{\"nombreUsuario\":\"a\",\"nombre\":\"A\",\"apellidos\":\"\",\"correo\":\"x@tec.ac.cr\"}",
+                "{\"nombreUsuario\":\"a\",\"nombre\":\"A\",\"verificado\":true}",
+                "{\"nombreUsuario\":\"a\",\"nombre\":\"\",\"apellidos\":\"\"}", "{\"nombreUsuario\":1,\"nombre\":\"A\",\"apellidos\":\"\"}",
+                "{}", "[]"})
             mvc.perform(put("/v1/me/profile").header("Authorization", "Bearer good")
                     .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isBadRequest());
-        }
         mvc.perform(put("/v1/me/profile").header("Authorization", "Bearer good")
                 .contentType(MediaType.APPLICATION_JSON).content("{bad")).andExpect(status().isBadRequest());
         verify(ops, never()).updateOwnProfile(any(), any(), any());

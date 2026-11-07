@@ -35,6 +35,7 @@ final class ApiErrors {
         if (failure instanceof SessionRejectedException rejected) return switch (rejected.reason()) {
             case ATTEMPT_CONSUMED -> of(HttpStatus.CONFLICT, "ATTEMPT_CONSUMED", request, clock);
             case ATTEMPT_EXPIRED -> of(HttpStatus.GONE, "ATTEMPT_EXPIRED", request, clock);
+            case CONTINUITY_REQUIRED -> of(HttpStatus.CONFLICT, "CONTINUITY_REQUIRED", request, clock);
             case IDENTITY_CONFLICT -> of(HttpStatus.UNAUTHORIZED, "AUTH_PROOF_INVALID", request, clock);
             default -> of(HttpStatus.UNAUTHORIZED, "AUTH_PROOF_INVALID", request, clock);
         };

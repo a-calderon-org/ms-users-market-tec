@@ -45,6 +45,7 @@ import org.springframework.web.bind.annotation.RestController;
 @ConditionalOnProperty(prefix = "users.google.http", name = "enabled", havingValue = "true")
 public final class EmailAuthController {
     private static final String REFRESH = "__Host-mtec-refresh";
+    private static final String ATTEMPT = "__Host-mtec-email-attempt";
     private final ObjectProvider<EmailLoginService> service;
     private final SessionAuthority sessions;
     private final UserRepository users;
@@ -94,31 +95,34 @@ public final class EmailAuthController {
         } catch (IllegalArgumentException invalid) {
             throw new GoogleAuthController.AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
         }
+        String browser;
         try {
-            login.request(email);
+            browser = login.request(email);
         } catch (SessionRejectedException ineligibleDomain) {
             throw new GoogleAuthController.AuthHttpException(HttpStatus.BAD_REQUEST, "INSTITUTIONAL_EMAIL_REQUIRED");
         }
-        // Identical for new, existing and throttled addresses.
-        return ResponseEntity.accepted().headers(headers).body(Map.of("status", "accepted"));
+        // Identical for new, existing and throttled addresses; the cookie pins the link to this browser.
+        headers.add(HttpHeaders.SET_COOKIE, cookie(ATTEMPT, browser, 600));
+        return ResponseEntity.accepted().headers(headers)
+                .body(Map.of("status", "accepted", "csrfToken", attemptCsrf(browser)));
     }
 
     @PostMapping(path = "/v1/auth/email/confirm", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> confirm(@RequestBody JsonNode body, HttpServletRequest request) throws ParseException {
         var headers = guard(request);
-        if (!onlyFields(body, "attemptId", "secret") || !body.path("attemptId").asText("").matches("[0-9a-f]{32}")
-                || !body.path("secret").asText("").matches("[0-9a-f]{64}"))
+        if (!onlyFields(body, "attemptId", "token") || !body.path("attemptId").asText("").matches("[0-9a-f]{32}")
+                || !body.path("token").asText("").matches("[0-9a-f]{64}"))
             throw new GoogleAuthController.AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
-        var result = available().confirm(body.get("attemptId").asText(), body.get("secret").asText());
+        String browser = browserProof(request);
+        var result = available().confirm(body.get("attemptId").asText(), browser, body.get("token").asText());
+        headers.add(HttpHeaders.SET_COOKIE, cookie(ATTEMPT, "", 0));
         var session = sessions.current(result.sessionId()).orElseThrow(SessionRejectedException::new);
         var user = users.findById(new UserId(result.userId())).orElseThrow(SessionRejectedException::new);
         user.requireActive();
         long expiresAt = SignedJWT.parse(result.jwt()).getJWTClaimsSet().getExpirationTime().toInstant().getEpochSecond();
-        headers.add(HttpHeaders.SET_COOKIE, ResponseCookie.from(REFRESH, result.refreshToken()).httpOnly(true)
-                .secure(true).path("/").sameSite("Lax")
-                .maxAge(Math.max(0, session.deadline().getEpochSecond() - clock.instant().getEpochSecond()))
-                .build().toString());
+        headers.add(HttpHeaders.SET_COOKIE, cookie(REFRESH, result.refreshToken(),
+                Math.max(0, session.deadline().getEpochSecond() - clock.instant().getEpochSecond())));
         var profile = user.profile();
         long deadline = session.deadline().getEpochSecond();
         var snapshot = new GoogleAuthController.SessionSnapshot(session.sessionId(), "active",
@@ -130,6 +134,33 @@ public final class EmailAuthController {
         return ResponseEntity.ok().headers(headers).body(new GoogleAuthController.AuthResponse(result.jwt(), "Bearer",
                 expiresAt, new GoogleAuthController.AuthenticatedUser(result.userId(), profile.correo().address(),
                 profile.details().nombre(), profile.fotoPerfil().toString()), snapshot, result.csrfToken()));
+    }
+
+    /** Same-browser proof: HttpOnly attempt cookie plus the CSRF value derived from it. */
+    private static String browserProof(HttpServletRequest request) {
+        String secret = null;
+        if (request.getCookies() != null) for (var c : request.getCookies()) if (ATTEMPT.equals(c.getName())) {
+            if (secret != null) secret = "";
+            else secret = c.getValue();
+        }
+        String csrf = request.getHeader("X-CSRF-Token");
+        if (secret == null || !secret.matches("[0-9a-f]{64}") || csrf == null
+                || !java.security.MessageDigest.isEqual(attemptCsrf(secret).getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                        csrf.getBytes(java.nio.charset.StandardCharsets.US_ASCII)))
+            throw new GoogleAuthController.AuthHttpException(HttpStatus.FORBIDDEN, "CSRF_INVALID");
+        return secret;
+    }
+
+    private static String attemptCsrf(String secret) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(("mtec-email-attempt-csrf:" + secret).getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+        } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    private static String cookie(String name, String value, long seconds) {
+        return ResponseCookie.from(name, value).httpOnly(true).secure(true).path("/").sameSite("Lax")
+                .maxAge(seconds).build().toString();
     }
 
     private EmailLoginService available() {

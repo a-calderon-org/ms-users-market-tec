@@ -74,16 +74,23 @@ class RecentProofAndMethodsServiceTest {
         var u = User.create(user, email, new ProfileDetails("ana", "Ana", ""), URI.create("about:blank"), START);
         store.insert(u);
         store.replace(u, u.verifyProfileEmail(email));
-        store.insertOrGet(new ExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL,
-                new ExternalIdentityKey(EmailLoginService.ISSUER, email.normalized()), user, email));
         recent = new RecentAuthenticationAuthority(sessions, attempts, clock, random);
         proofs = new RecentProofService(sessions, recent, attempts, repo, store, store, google, "client-id",
                 (to, id, secret) -> sent.add(new String[]{to.address(), id, secret}), clock, random);
         methods = new AuthMethodsService(sessions, recent, store, store, google, "client-id");
     }
 
-    private RecentAttempt emailLinkAttempt() {
-        return proofs.begin(SID, user, RecentAttempt.Method.INSTITUTIONAL_EMAIL, "LINK_IDENTITY", "GOOGLE");
+    private void linkEmailIdentity() {
+        store.insertOrGet(new ExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL,
+                new ExternalIdentityKey(EmailLoginService.ISSUER, email.normalized()), user, email));
+    }
+
+    private RecentAttempt currentEmailAttempt() {
+        return proofs.begin(SID, user, RecentAttempt.Method.INSTITUTIONAL_EMAIL, RecentProofService.LINK_CURRENT, "GOOGLE");
+    }
+
+    private RecentAttempt newGoogleAttempt() {
+        return proofs.begin(SID, user, RecentAttempt.Method.GOOGLE, RecentProofService.LINK_NEW, "GOOGLE");
     }
 
     private void verifyByEmail(RecentAttempt a) {
@@ -94,20 +101,23 @@ class RecentProofAndMethodsServiceTest {
     }
 
     @Test void onlyAllowlistedOperationMethodTargetCombinationsBegin() {
-        assertThrows(SessionRejectedException.class, () -> proofs.begin(SID, user,
-                RecentAttempt.Method.INSTITUTIONAL_EMAIL, "DELETE_EVERYTHING", "GOOGLE"));
-        assertThrows(SessionRejectedException.class, () -> proofs.begin(SID, user,
-                RecentAttempt.Method.INSTITUTIONAL_EMAIL, "DEACTIVATE_USER", stranger.value()));
-        assertThrows(SessionRejectedException.class, () -> proofs.begin(SID, user,
-                RecentAttempt.Method.PASSKEY, "LINK_IDENTITY", "GOOGLE"));
-        assertThrows(SessionRejectedException.class, () -> proofs.begin("f".repeat(32), user,
-                RecentAttempt.Method.INSTITUTIONAL_EMAIL, "LINK_IDENTITY", "GOOGLE"));
-        assertNotNull(emailLinkAttempt());
+        var mail = RecentAttempt.Method.INSTITUTIONAL_EMAIL;
+        assertThrows(SessionRejectedException.class, () -> proofs.begin(SID, user, mail, "DELETE_EVERYTHING", "GOOGLE"));
+        assertThrows(SessionRejectedException.class, () -> proofs.begin(SID, user, mail, "LINK_IDENTITY", "GOOGLE"));
+        assertThrows(SessionRejectedException.class, () -> proofs.begin(SID, user, mail, "DEACTIVATE_USER", stranger.value()));
+        assertThrows(SessionRejectedException.class, () -> proofs.begin(SID, user, RecentAttempt.Method.PASSKEY, RecentProofService.LINK_CURRENT, "GOOGLE"));
+        // current proof must come from the other method; new email proof only for the account's own address
+        assertThrows(SessionRejectedException.class, () -> proofs.begin(SID, user, RecentAttempt.Method.GOOGLE, RecentProofService.LINK_CURRENT, "GOOGLE"));
+        assertThrows(SessionRejectedException.class, () -> proofs.begin(SID, user, mail, RecentProofService.LINK_NEW, "INSTITUTIONAL_EMAIL:evil@tec.ac.cr"));
+        assertThrows(SessionRejectedException.class, () -> proofs.begin("f".repeat(32), user, mail, RecentProofService.LINK_CURRENT, "GOOGLE"));
+        assertNotNull(currentEmailAttempt());
+        assertNotNull(newGoogleAttempt());
+        assertNotNull(proofs.begin(SID, user, mail, RecentProofService.LINK_NEW, "INSTITUTIONAL_EMAIL:" + email.normalized()));
     }
 
     @Test void emailLinkProvesControlOnceAndOnlyForTheBoundAttempt() {
-        var a = emailLinkAttempt();
-        var other = emailLinkAttempt();
+        var a = currentEmailAttempt();
+        var other = currentEmailAttempt();
         proofs.requestEmail(SID, user, a.attemptId());
         var link = sent.get(0);
         assertNotEquals(link[2], challenges.get(a.attemptId())[0]);
@@ -120,41 +130,64 @@ class RecentProofAndMethodsServiceTest {
     }
 
     @Test void expiredEmailLinkIsRejected() {
-        var a = emailLinkAttempt();
+        var a = currentEmailAttempt();
         proofs.requestEmail(SID, user, a.attemptId());
         time.set(START.plusSeconds(299));
         assertThrows(SessionRejectedException.class, () -> proofs.confirmEmail(SID, user, a.attemptId(), sent.get(0)[2]));
     }
 
-    @Test void linkingGoogleNeedsVerifiedProofAndNonceBoundCredentialAndConsumesTheAttempt() {
-        var a = emailLinkAttempt();
-        String token = "nonce:" + a.nonce();
-        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.GOOGLE, a.attemptId(), token));
-        verifyByEmail(a);
-        assertThrows(IllegalArgumentException.class, () -> methods.link(SID, user, IdentityProvider.GOOGLE, a.attemptId(), "nonce:other"));
-        var linked = methods.link(SID, user, IdentityProvider.GOOGLE, a.attemptId(), token);
+    @Test void addingGoogleNeedsBothIndependentProofsAndConsumesBothAtomically() {
+        linkEmailIdentity();
+        var cur = currentEmailAttempt();
+        var neu = newGoogleAttempt();
+        String token = "nonce:" + neu.nonce();
+        // a verified profile address and a valid Google credential are not enough without the current proof
+        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.GOOGLE, cur.attemptId(), neu.attemptId(), token));
+        verifyByEmail(cur);
+        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.GOOGLE, cur.attemptId(), cur.attemptId(), token));
+        assertThrows(IllegalArgumentException.class, () -> methods.link(SID, user, IdentityProvider.GOOGLE, cur.attemptId(), neu.attemptId(), "nonce:other"));
+        assertFalse(data.get(cur.attemptId()).consumed());
+        assertNull(data.get(neu.attemptId()).authenticatedAt());
+        var linked = methods.link(SID, user, IdentityProvider.GOOGLE, cur.attemptId(), neu.attemptId(), token);
         assertEquals(user, linked.userId());
         assertEquals(user, store.findByKey(googleKey).orElseThrow().userId());
-        assertTrue(data.get(a.attemptId()).consumed());
-        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.GOOGLE, a.attemptId(), token));
+        assertTrue(data.get(cur.attemptId()).consumed());
+        assertTrue(data.get(neu.attemptId()).consumed());
+        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.GOOGLE, cur.attemptId(), neu.attemptId(), token));
         assertEquals(2, methods.list(SID, user).size());
     }
 
+    @Test void currentProofForAnotherProviderOrWithoutAnActiveCurrentLinkCannotBeReused() {
+        // no email identity linked: the "current method" does not exist on the account
+        var cur = currentEmailAttempt();
+        var neu = newGoogleAttempt();
+        verifyByEmail(cur);
+        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.GOOGLE,
+                cur.attemptId(), neu.attemptId(), "nonce:" + neu.nonce()));
+        assertTrue(store.findByKey(googleKey).isEmpty());
+        // proof for GOOGLE cannot authorize adding the email method
+        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.INSTITUTIONAL_EMAIL,
+                cur.attemptId(), neu.attemptId(), null));
+    }
+
     @Test void googleIdentityOwnedByAnotherAccountIsNeverReassigned() {
+        linkEmailIdentity();
         var u = User.create(stranger, new Email("beto@tec.ac.cr"), new ProfileDetails("beto", "Beto", ""),
                 URI.create("about:blank"), START);
         store.insert(u);
         store.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, googleKey, stranger, new Email("beto@tec.ac.cr")));
-        var a = emailLinkAttempt();
-        verifyByEmail(a);
+        var cur = currentEmailAttempt();
+        var neu = newGoogleAttempt();
+        verifyByEmail(cur);
         assertEquals(UserDomainException.Reason.IDENTITY_CONFLICT, assertThrows(UserDomainException.class,
-                () -> methods.link(SID, user, IdentityProvider.GOOGLE, a.attemptId(), "nonce:" + a.nonce())).reason());
+                () -> methods.link(SID, user, IdentityProvider.GOOGLE, cur.attemptId(), neu.attemptId(), "nonce:" + neu.nonce())).reason());
         assertEquals(stranger, store.findByKey(googleKey).orElseThrow().userId());
-        assertFalse(data.get(a.attemptId()).consumed());
+        assertFalse(data.get(cur.attemptId()).consumed());
+        assertFalse(data.get(neu.attemptId()).consumed());
     }
 
-    @Test void googleProofRequiresAnIdentityOwnedByTheSameAccount() {
-        var a = proofs.begin(SID, user, RecentAttempt.Method.GOOGLE, "LINK_IDENTITY", "INSTITUTIONAL_EMAIL");
+    @Test void googleCurrentProofRequiresAnIdentityOwnedByTheSameAccount() {
+        var a = proofs.begin(SID, user, RecentAttempt.Method.GOOGLE, RecentProofService.LINK_CURRENT, "INSTITUTIONAL_EMAIL");
         assertThrows(SessionRejectedException.class, () -> proofs.proveGoogle(SID, user, a.attemptId(), "nonce:" + a.nonce()));
         store.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, googleKey, user, email));
         googleSubject = "other-sub";
@@ -162,11 +195,28 @@ class RecentProofAndMethodsServiceTest {
         googleSubject = "g-sub";
         proofs.proveGoogle(SID, user, a.attemptId(), "nonce:" + a.nonce());
         assertNotNull(data.get(a.attemptId()).authenticatedAt());
+        // a "new identity" attempt can never be satisfied by an existing identity
+        var neu = newGoogleAttempt();
+        assertThrows(SessionRejectedException.class, () -> proofs.proveGoogle(SID, user, neu.attemptId(), "nonce:" + neu.nonce()));
     }
 
-    @Test void institutionalEmailLinkNeedsGoogleProofAndIsIdempotentForTheOwner() {
-        var a = proofs.begin(SID, user, RecentAttempt.Method.GOOGLE, "LINK_IDENTITY", "INSTITUTIONAL_EMAIL");
-        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.INSTITUTIONAL_EMAIL, a.attemptId(), null));
-        assertEquals(1, methods.list(SID, user).size());
+    @Test void addingEmailNeedsGoogleCurrentProofAndAnEmailLinkToTheExactAddress() {
+        store.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, googleKey, user, email));
+        var cur = proofs.begin(SID, user, RecentAttempt.Method.GOOGLE, RecentProofService.LINK_CURRENT, "INSTITUTIONAL_EMAIL");
+        var neu = proofs.begin(SID, user, RecentAttempt.Method.INSTITUTIONAL_EMAIL, RecentProofService.LINK_NEW,
+                "INSTITUTIONAL_EMAIL:" + email.normalized());
+        proofs.proveGoogle(SID, user, cur.attemptId(), "nonce:" + cur.nonce());
+        // profile.verificado alone is not proof of control of the new method
+        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.INSTITUTIONAL_EMAIL,
+                cur.attemptId(), neu.attemptId(), null));
+        assertFalse(data.get(cur.attemptId()).consumed());
+        verifyByEmail(neu);
+        var linked = methods.link(SID, user, IdentityProvider.INSTITUTIONAL_EMAIL, cur.attemptId(), neu.attemptId(), null);
+        assertEquals(IdentityProvider.INSTITUTIONAL_EMAIL, linked.provider());
+        assertTrue(data.get(cur.attemptId()).consumed());
+        assertTrue(data.get(neu.attemptId()).consumed());
+        assertThrows(SessionRejectedException.class, () -> methods.link(SID, user, IdentityProvider.INSTITUTIONAL_EMAIL,
+                cur.attemptId(), neu.attemptId(), null));
+        assertEquals(2, methods.list(SID, user).size());
     }
 }

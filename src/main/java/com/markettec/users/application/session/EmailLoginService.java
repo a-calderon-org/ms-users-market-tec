@@ -59,29 +59,38 @@ public final class EmailLoginService {
     }
 
     /**
-     * Returns normally whether or not a link was sent (throttled requests are silent), so callers
-     * cannot learn anything about accounts or rate state. Non-institutional domains are rejected.
+     * Binds the link to the requesting browser: the returned secret belongs in an HttpOnly cookie.
+     * Always returns a browser secret, whether or not a link was sent (throttled requests are silent),
+     * so callers cannot learn anything about accounts or rate state. Non-institutional domains are rejected.
      */
-    public void request(Email email) {
+    public String request(Email email) {
         if (!InstitutionalEmailProof.eligible(email)) throw new SessionRejectedException();
         Instant now = now();
+        String browser = randomHex(32);
         String[] issued = tx.execute(() -> {
             if (attempts.countSince(email.normalized(), now.minus(THROTTLE_WINDOW)) >= MAX_REQUESTS_PER_WINDOW)
                 return null;
             String id = randomHex(16);
             String secret = randomHex(32);
-            attempts.insert(new EmailLoginAttempt(id, email, digest(email, id, secret), now, now.plus(TTL), 0, false, 0));
+            attempts.insert(new EmailLoginAttempt(id, email, digest(email, id, secret), sha256(browser),
+                    now, now.plus(TTL), 0, false, 0));
             return new String[]{id, secret};
         });
         if (issued != null) sender.send(email, issued[0], issued[1]);
+        return browser;
     }
 
-    private enum Kind { OK, CONSUMED, EXPIRED, REJECTED }
+    private enum Kind { OK, CONSUMED, EXPIRED, REJECTED, CONTINUITY }
     private record Outcome(Kind kind, GoogleLoginService.Result result) { }
 
-    /** Explicit POST confirmation. Consumption, account resolution and session issue commit together. */
-    public GoogleLoginService.Result confirm(String attemptId, String secret) {
-        if (attemptId == null || !attemptId.matches("[0-9a-f]{32}") || secret == null || !secret.matches("[0-9a-f]{64}"))
+    /**
+     * Explicit POST confirmation from the requesting browser. Consumption and session issue commit together.
+     * An address that already belongs to an account never logs in on mailbox possession alone (B02):
+     * the link is spent and CONTINUITY_REQUIRED is returned without credentials.
+     */
+    public GoogleLoginService.Result confirm(String attemptId, String browserSecret, String token) {
+        if (attemptId == null || !attemptId.matches("[0-9a-f]{32}") || token == null || !token.matches("[0-9a-f]{64}")
+                || browserSecret == null || !browserSecret.matches("[0-9a-f]{64}"))
             throw new SessionRejectedException();
         Outcome outcome = tx.execute(() -> {
             var attempt = attempts.loadLocked(attemptId).orElse(null);
@@ -90,43 +99,48 @@ public final class EmailLoginService {
             if (attempt.consumed()) return new Outcome(Kind.CONSUMED, null);
             if (!now.isBefore(attempt.expiresAt())) return new Outcome(Kind.EXPIRED, null);
             if (attempt.failures() >= EmailLoginAttempt.MAX_FAILURES) return new Outcome(Kind.REJECTED, null);
-            if (!equal(attempt.verifier(), digest(attempt.recipient(), attemptId, secret))) {
+            // Other browsers learn nothing and cannot spend the link; wrong proof counts as a failure.
+            boolean browserOk = equal(attempt.browserHash(), sha256(browserSecret));
+            boolean tokenOk = equal(attempt.verifier(), digest(attempt.recipient(), attemptId, token));
+            if (!browserOk || !tokenOk) {
                 attempts.replace(attempt, attempt.failed()); // committed: the failure is returned, not thrown
                 return new Outcome(Kind.REJECTED, null);
             }
             attempts.replace(attempt, attempt.consume());
-            return new Outcome(Kind.OK, resolveAndIssue(attempt.recipient(), now));
+            var email = attempt.recipient();
+            var key = new ExternalIdentityKey(ISSUER, email.normalized());
+            if (identities.findByKey(key).isPresent() || emails.historicalEmailExists(email.normalized()))
+                return new Outcome(Kind.CONTINUITY, null);
+            return new Outcome(Kind.OK, createAndIssue(email, key, now));
         });
         return switch (outcome.kind()) {
             case OK -> outcome.result();
             case CONSUMED -> throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_CONSUMED);
             case EXPIRED -> throw new SessionRejectedException(SessionRejectedException.Reason.ATTEMPT_EXPIRED);
+            case CONTINUITY -> throw new SessionRejectedException(SessionRejectedException.Reason.CONTINUITY_REQUIRED);
             case REJECTED -> throw new SessionRejectedException();
         };
     }
 
-    private GoogleLoginService.Result resolveAndIssue(Email email, Instant now) {
-        var key = new ExternalIdentityKey(ISSUER, email.normalized());
-        var linked = identities.findByKey(key);
-        if (linked.isPresent()) {
-            if (linked.get().provider() != IdentityProvider.INSTITUTIONAL_EMAIL
-                    || linked.get().status() != IdentityLinkStatus.ACTIVE) throw new SessionRejectedException();
-        } else {
-            // Never attach to an account that merely shares the address.
-            if (emails.historicalEmailExists(email.normalized()))
-                throw new SessionRejectedException(SessionRejectedException.Reason.IDENTITY_CONFLICT);
-            var userId = ids.nextId();
-            var user = User.create(userId, email, new ProfileDetails(userId.value(), "Usuario", ""),
-                    URI.create("about:blank"), now);
-            users.insert(user);
-            users.replace(user, user.verifyProfileEmail(email));
-            identities.insertOrGet(new ExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, key, userId,
-                    email, IdentityLinkStatus.ACTIVE));
-        }
+    private GoogleLoginService.Result createAndIssue(Email email, ExternalIdentityKey key, Instant now) {
+        var userId = ids.nextId();
+        var user = User.create(userId, email, new ProfileDetails(userId.value(), "Usuario", ""),
+                URI.create("about:blank"), now);
+        users.insert(user);
+        users.replace(user, user.verifyProfileEmail(email));
+        identities.insertOrGet(new ExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, key, userId,
+                email, IdentityLinkStatus.ACTIVE));
         var evidence = new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, key, email);
         var issued = sessions.issue(sessions.createAuthenticated(evidence), jwt);
         return new GoogleLoginService.Result(issued.jwt(), issued.sessionId(), issued.userId(),
                 issued.sessionDeadline(), issued.refreshToken(), issued.csrfToken());
+    }
+
+    static String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.US_ASCII)));
+        } catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 
     static String digest(Email recipient, String attemptId, String secret) {

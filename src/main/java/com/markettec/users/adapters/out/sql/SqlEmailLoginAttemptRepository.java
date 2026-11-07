@@ -16,9 +16,9 @@ public final class SqlEmailLoginAttemptRepository implements EmailLoginAttemptRe
     @Override public void insert(EmailLoginAttempt a) {
         requireTransaction();
         jdbc.update("""
-            INSERT INTO dbo.email_login_attempts(attempt_id,recipient,verifier,created_ms,expires_ms,failures,consumed,version)
-            VALUES (?,?,?,?,?,?,?,?)
-            """, a.attemptId(), a.recipient().address(), a.verifier(), a.createdAt().toEpochMilli(),
+            INSERT INTO dbo.email_login_attempts(attempt_id,recipient,verifier,browser_hash,created_ms,expires_ms,failures,consumed,version)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """, a.attemptId(), a.recipient().address(), a.verifier(), a.browserHash(), a.createdAt().toEpochMilli(),
                 a.expiresAt().toEpochMilli(), a.failures(), a.consumed(), a.version());
     }
 
@@ -26,10 +26,10 @@ public final class SqlEmailLoginAttemptRepository implements EmailLoginAttemptRe
         requireTransaction();
         if (id == null || !id.matches("[0-9a-f]{32}")) return Optional.empty();
         return jdbc.query("""
-            SELECT attempt_id,recipient,verifier,created_ms,expires_ms,failures,consumed,version
+            SELECT attempt_id,recipient,verifier,browser_hash,created_ms,expires_ms,failures,consumed,version
             FROM dbo.email_login_attempts WITH (UPDLOCK,HOLDLOCK) WHERE attempt_id=?
             """, (rs, row) -> new EmailLoginAttempt(rs.getString("attempt_id").trim(),
-                new Email(rs.getString("recipient")), rs.getString("verifier").trim(),
+                new Email(rs.getString("recipient")), rs.getString("verifier").trim(), rs.getString("browser_hash").trim(),
                 Instant.ofEpochMilli(rs.getLong("created_ms")), Instant.ofEpochMilli(rs.getLong("expires_ms")),
                 rs.getInt("failures"), rs.getBoolean("consumed"), rs.getLong("version")), id)
                 .stream().findFirst();

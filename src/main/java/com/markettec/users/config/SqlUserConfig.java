@@ -112,8 +112,7 @@ public class SqlUserConfig {
     SessionActionAuthorization sessionActionAuthorization() {
         return new SessionActionAuthorization() {
             @Override public void requireRenewal(Session session) { throw new SessionRejectedException(); }
-            // Activity is recorded only by the Bearer+CSRF authenticated session-activity endpoint.
-            @Override public void requireAdmissibleActivity(Session session) { }
+            @Override public void requireAdmissibleActivity(Session session) { throw new SessionRejectedException(); }
         };
     }
 

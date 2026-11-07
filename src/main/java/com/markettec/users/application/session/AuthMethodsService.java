@@ -33,35 +33,48 @@ public final class AuthMethodsService {
     }
 
     /**
-     * Google: needs a verified email proof (attempt target GOOGLE) and a Google ID token bound to the attempt nonce.
-     * Institutional email: needs a verified Google proof (attempt target INSTITUTIONAL_EMAIL); links the
-     * account's own verified institutional profile address.
+     * Requires two independent, single-use recent proofs consumed atomically with the link:
+     * the CURRENT method (email when adding Google, Google when adding email) and the NEW one
+     * (a nonce-bound Google credential, or an email link to the exact address being added).
+     * A verified profile address alone is never sufficient.
      */
     public ExternalIdentity link(String sessionId, UserId userId, IdentityProvider provider,
-                                 String attemptId, String credential) {
-        boolean isGoogle = provider == IdentityProvider.GOOGLE;
-        if (isGoogle && (google == null || googleAudience == null || googleAudience.isBlank()
+                                 String currentAttemptId, String newAttemptId, String credential) {
+        boolean addGoogle = provider == IdentityProvider.GOOGLE;
+        if (Objects.equals(currentAttemptId, newAttemptId)) throw new SessionRejectedException();
+        if (addGoogle && (google == null || googleAudience == null || googleAudience.isBlank()
                 || credential == null || credential.isBlank() || credential.length() > 16_384))
             throw new SessionRejectedException();
-        var method = isGoogle ? RecentAttempt.Method.INSTITUTIONAL_EMAIL : RecentAttempt.Method.GOOGLE;
-        return recent.consumeWith(sessionId, userId, attemptId, method, RecentProofService.LINK_OPERATION,
-                provider.name(), attempt -> {
+        var currentMethod = addGoogle ? RecentAttempt.Method.INSTITUTIONAL_EMAIL : RecentAttempt.Method.GOOGLE;
+        var currentProvider = addGoogle ? IdentityProvider.INSTITUTIONAL_EMAIL : IdentityProvider.GOOGLE;
+        return recent.consumeWith(sessionId, userId, currentAttemptId, currentMethod,
+                RecentProofService.LINK_CURRENT, provider.name(), current -> {
             User user = users.findById(userId).orElseThrow(SessionRejectedException::new);
             user.requireActive();
+            // The proven current method must really be an active link of this account.
+            if (identities.findByUser(userId).stream().noneMatch(i -> i.provider() == currentProvider
+                    && i.status() == IdentityLinkStatus.ACTIVE)) throw new SessionRejectedException();
             ExternalIdentity candidate;
-            if (isGoogle) {
-                var verified = google.verify(credential, new GoogleVerificationContext(googleAudience, attempt.nonce()));
+            if (addGoogle) {
+                // The new-method proof is the credential itself, bound to its own attempt nonce.
+                var fresh = recent.attempt(newAttemptId).orElseThrow(SessionRejectedException::new);
+                var verified = google.verify(credential, new GoogleVerificationContext(googleAudience, fresh.nonce()));
                 if (verified == null || !googleAudience.equals(verified.audience())
                         || verified.verifiedEmail() == null
                         || !InstitutionalEmailProof.eligible(verified.verifiedEmail()))
                     throw new SessionRejectedException();
+                recent.recordVerifiedFor(fresh, userId, sessionId);
+                recent.consumeWith(sessionId, userId, newAttemptId, RecentAttempt.Method.GOOGLE,
+                        RecentProofService.LINK_NEW, "GOOGLE", a -> null);
                 candidate = new ExternalIdentity(IdentityProvider.GOOGLE,
                         new ExternalIdentityKey(verified.issuer(), verified.subject()), userId,
                         verified.verifiedEmail(), IdentityLinkStatus.ACTIVE);
             } else {
                 Email own = user.profile().correo();
-                if (!user.profile().verificado() || !InstitutionalEmailProof.eligible(own))
-                    throw new SessionRejectedException();
+                if (!InstitutionalEmailProof.eligible(own)) throw new SessionRejectedException();
+                recent.consumeWith(sessionId, userId, newAttemptId, RecentAttempt.Method.INSTITUTIONAL_EMAIL,
+                        RecentProofService.LINK_NEW, RecentProofService.EMAIL_TARGET_PREFIX + own.normalized(),
+                        a -> null);
                 candidate = new ExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL,
                         new ExternalIdentityKey(EmailLoginService.ISSUER, own.normalized()), userId, own,
                         IdentityLinkStatus.ACTIVE);

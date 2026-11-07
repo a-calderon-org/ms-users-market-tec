@@ -41,6 +41,15 @@ public final class RecentAuthenticationAuthority {
         });
     }
 
+    /** Read-only snapshot for same-package services that hold the session lock. */
+    java.util.Optional<RecentAttempt> attempt(String attemptId) { return attempts.loadLocked(attemptId); }
+
+    /** Records fresh verification of an attempt the caller has just proven; same bindings as any evidence. */
+    void recordVerifiedFor(RecentAttempt attempt, UserId userId, String sessionId) {
+        recordVerified(new TrustedRecentEvidence(userId, sessionId, attempt.attemptId(), attempt.method(),
+                attempt.operation(), attempt.target(), attempt.nonce(), now()));
+    }
+
     /** Package access deliberately excludes public adapters and arbitrary DTOs. */
     void recordVerified(TrustedRecentEvidence evidence) {
         if (evidence == null || evidence.userId == null) throw new SessionRejectedException();

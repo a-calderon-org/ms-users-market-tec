@@ -40,7 +40,7 @@ public final class UserProfileController {
     @GetMapping(path = "/v1/me/profile", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> myProfile(HttpServletRequest request) {
         String bearer = BearerRequests.bearer(request);
-        return ok(operations.getOwnProfile(bearer, jwt.verify(bearer).userId()));
+        return ok(read(operations.getOwnProfile(bearer, jwt.verify(bearer).userId())));
     }
 
     @PutMapping(path = "/v1/me/profile", consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -53,7 +53,7 @@ public final class UserProfileController {
     @GetMapping(path = "/v1/usuarios/{userId}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> profile(@PathVariable String userId, HttpServletRequest request) {
         String bearer = BearerRequests.bearer(request);
-        return ok(operations.getOwnProfile(bearer, owned(bearer, userId)));
+        return ok(read(operations.getOwnProfile(bearer, owned(bearer, userId))));
     }
 
     @PutMapping(path = "/v1/usuarios/{userId}", consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -77,30 +77,37 @@ public final class UserProfileController {
         return target;
     }
 
+    /** UpdateUserRequest: exactly the three editable fields, all required. */
     private ResponseEntity<?> update(String bearer, UserId target, JsonNode body) {
-        if (body == null || !body.isObject() || body.isEmpty()) throw invalid();
-        var names = body.fieldNames();
-        while (names.hasNext()) {
-            String name = names.next();
-            if (!EDITABLE.contains(name) || !body.get(name).isTextual()) throw invalid();
-        }
-        UserProfile current = operations.getOwnProfile(bearer, target);
-        var d = current.details();
-        var merged = new ProfileDetails(body.has("nombreUsuario") ? body.get("nombreUsuario").asText() : d.nombreUsuario(),
-                body.has("nombre") ? body.get("nombre").asText() : d.nombre(),
-                body.has("apellidos") ? body.get("apellidos").asText() : d.apellidos());
-        return ok(operations.updateOwnProfile(bearer, target, merged));
+        if (body == null || !body.isObject() || body.size() != EDITABLE.size()) throw invalid();
+        for (String name : EDITABLE) if (!body.has(name) || !body.get(name).isTextual()) throw invalid();
+        var details = new ProfileDetails(body.get("nombreUsuario").asText(), body.get("nombre").asText(),
+                body.get("apellidos").asText());
+        return ok(updated(operations.updateOwnProfile(bearer, target, details)));
     }
 
     private static GoogleAuthController.AuthHttpException invalid() {
         return new GoogleAuthController.AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
     }
 
-    private static ResponseEntity<?> ok(UserProfile p) {
-        return ResponseEntity.ok().header("Cache-Control", "no-store").body(new ProfileResponse(p.userId().value(),
-                p.details().nombreUsuario(), p.details().nombre(), p.details().apellidos(), p.correo().address(),
-                p.fotoPerfil().toString(), p.fechaRegistro().toString(), p.fechaActualizacion().toString(),
-                p.verificado()));
+    private static ResponseEntity<?> ok(Object body) {
+        return ResponseEntity.ok().header("Cache-Control", "no-store").body(body);
+    }
+
+    // Readable profiles belong to active accounts (the use case rejects deactivated ones).
+    private static final String ESTADO = "activo";
+
+    private static UserProfileV1 read(UserProfile p) {
+        return new UserProfileV1(p.userId().value(), p.details().nombreUsuario(), p.details().nombre(),
+                p.details().apellidos(), p.correo().address(), p.fotoPerfil().toString(),
+                p.fechaRegistro().toString(), p.fechaRegistro().getEpochSecond(), p.verificado(), ESTADO);
+    }
+
+    private static UpdateUserResponseV1 updated(UserProfile p) {
+        return new UpdateUserResponseV1(p.userId().value(), p.details().nombreUsuario(), p.details().nombre(),
+                p.details().apellidos(), p.correo().address(), p.fotoPerfil().toString(),
+                p.fechaRegistro().toString(), p.fechaActualizacion().toString(), p.verificado(), ESTADO,
+                "Perfil actualizado");
     }
 
     @ExceptionHandler({GoogleAuthController.AuthHttpException.class, InvalidInternalJwtException.class,
@@ -114,7 +121,12 @@ public final class UserProfileController {
         return ApiErrors.of(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", request, clock);
     }
 
-    public record ProfileResponse(String userId, String nombreUsuario, String nombre, String apellidos,
-                                  String correo, String fotoPerfil, String fechaRegistro,
-                                  String fechaActualizacion, boolean verificado) { }
+    public record UserProfileV1(String id, String nombreUsuario, String nombre, String apellidos, String correo,
+                                String fotoPerfil, String fechaRegistro, long createdAt, boolean verificado,
+                                String estado) { }
+
+    public record UpdateUserResponseV1(String id, String nombreUsuario, String nombre, String apellidos,
+                                       String correo, String fotoPerfil, String fechaRegistro,
+                                       String fechaActualizacion, boolean verificado, String estado,
+                                       String message) { }
 }

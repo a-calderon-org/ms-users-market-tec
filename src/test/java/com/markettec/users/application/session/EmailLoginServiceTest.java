@@ -56,8 +56,10 @@ class EmailLoginServiceTest {
                 (to, id, secret) -> sent.add(new String[]{to.address(), id, secret}), clock, new SecureRandom());
     }
 
+    private String browser;
+
     private String[] requestLink(String address) {
-        service.request(new Email(address));
+        browser = service.request(new Email(address));
         return sent.get(sent.size() - 1);
     }
 
@@ -87,33 +89,51 @@ class EmailLoginServiceTest {
 
     @Test void confirmCreatesVerifiedAccountOnceAndLinkIsSingleUse() {
         var link = requestLink("ana@tec.ac.cr");
-        var result = service.confirm(link[1], link[2]);
+        var result = service.confirm(link[1], browser, link[2]);
         assertEquals("jwt", result.jwt());
         var user = store.findById(generated).orElseThrow();
         assertTrue(user.profile().verificado());
         assertEquals(generated, store.findByKey(new ExternalIdentityKey(EmailLoginService.ISSUER, "ana@tec.ac.cr")).orElseThrow().userId());
         assertTrue(rows.get(link[1]).consumed());
         assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
-                assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], link[2])).reason());
+                assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], browser, link[2])).reason());
         verify(sessions, times(1)).issue(any(), any());
     }
 
-    @Test void secondLoginResolvesTheSameAccountWithoutCreatingAnother() {
+    @Test void existingLinkedAccountRequiresContinuityAndReceivesNoCredentials() {
         var first = requestLink("ana@tec.ac.cr");
-        service.confirm(first[1], first[2]);
-        UserId owner = generated;
+        service.confirm(first[1], browser, first[2]);
         var second = requestLink("ana@tec.ac.cr");
-        service.confirm(second[1], second[2]);
-        assertEquals(owner, generated);
+        assertEquals(SessionRejectedException.Reason.CONTINUITY_REQUIRED,
+                assertThrows(SessionRejectedException.class, () -> service.confirm(second[1], browser, second[2])).reason());
         assertEquals(1, issued);
+        assertTrue(rows.get(second[1]).consumed());
+        verify(sessions, times(1)).issue(any(), any());
+        verify(sessions, times(1)).createAuthenticated(any());
+    }
+
+    @Test void anotherBrowserCannotRedeemAndDoesNotSpendTheLink() {
+        var link = requestLink("ana@tec.ac.cr");
+        String mine = browser;
+        assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], "9".repeat(64), link[2]));
+        assertFalse(rows.get(link[1]).consumed());
+        assertEquals(1, rows.get(link[1]).failures());
+        assertEquals(0, issued);
+        assertNotNull(service.confirm(link[1], mine, link[2]));
+        assertNotEquals(sha256Hex(link[2]), rows.get(link[1]).browserHash());
+    }
+
+    private static String sha256Hex(String v) {
+        try { return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(v.getBytes())); }
+        catch (Exception e) { throw new IllegalStateException(e); }
     }
 
     @Test void wrongSecretCountsFailuresThenLocksTheAttempt() {
         var link = requestLink("ana@tec.ac.cr");
         for (int i = 0; i < EmailLoginAttempt.MAX_FAILURES; i++)
-            assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], "f".repeat(64)));
+            assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], browser, "f".repeat(64)));
         assertEquals(EmailLoginAttempt.MAX_FAILURES, rows.get(link[1]).failures());
-        assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], link[2]));
+        assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], browser, link[2]));
         assertEquals(0, issued);
     }
 
@@ -121,23 +141,23 @@ class EmailLoginServiceTest {
         var link = requestLink("ana@tec.ac.cr");
         time.set(START.plusSeconds(600));
         assertEquals(SessionRejectedException.Reason.ATTEMPT_EXPIRED,
-                assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], link[2])).reason());
+                assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], browser, link[2])).reason());
         assertEquals(0, issued);
     }
 
     @Test void secretForAnotherAttemptOrAddressIsRejected() {
         var a = requestLink("ana@tec.ac.cr");
         var b = requestLink("beto@tec.ac.cr");
-        assertThrows(SessionRejectedException.class, () -> service.confirm(a[1], b[2]));
-        assertThrows(SessionRejectedException.class, () -> service.confirm("0".repeat(32), a[2]));
-        assertThrows(SessionRejectedException.class, () -> service.confirm("bad", a[2]));
+        assertThrows(SessionRejectedException.class, () -> service.confirm(a[1], browser, b[2]));
+        assertThrows(SessionRejectedException.class, () -> service.confirm("0".repeat(32), browser, a[2]));
+        assertThrows(SessionRejectedException.class, () -> service.confirm("bad", browser, a[2]));
     }
 
     @Test void existingAccountWithTheSameAddressIsNeverMerged() {
         historical = true;
         var link = requestLink("ana@tec.ac.cr");
-        assertEquals(SessionRejectedException.Reason.IDENTITY_CONFLICT,
-                assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], link[2])).reason());
+        assertEquals(SessionRejectedException.Reason.CONTINUITY_REQUIRED,
+                assertThrows(SessionRejectedException.class, () -> service.confirm(link[1], browser, link[2])).reason());
         assertEquals(0, issued);
         verify(sessions, never()).issue(any(), any());
     }

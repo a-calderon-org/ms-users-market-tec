@@ -44,14 +44,14 @@ public final class AuthApiController {
         this.clock = clock;
     }
 
+    /**
+     * B03: only server-verified business activity may extend a session, and no producer of that
+     * evidence exists yet. The caller is authenticated, then refused; deadlines are never touched.
+     */
     @PostMapping(path = "/v1/auth/session/activity", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> activity(HttpServletRequest request) {
-        var token = mutating(request);
-        Session session = sessions.recordAdmissibleActivity(token.sessionId());
-        return ok(new ActivityResponse(session.sessionId(), "active", clock.instant().getEpochSecond(),
-                session.lastActivityAt().getEpochSecond(), session.renewableUntil().getEpochSecond(),
-                session.idleUntil().getEpochSecond(), session.absoluteUntil().getEpochSecond(),
-                session.deadline().getEpochSecond()));
+        mutating(request);
+        throw new GoogleAuthController.AuthHttpException(HttpStatus.FORBIDDEN, "ACTIVITY_EVIDENCE_REQUIRED");
     }
 
     @PostMapping(path = "/v1/auth/proofs/attempts", consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -116,25 +116,33 @@ public final class AuthApiController {
         return ok(Map.of("methods", items));
     }
 
+    /**
+     * Two independent recent proofs: control of the current method ({@code currentAttemptId}) and of the
+     * new one ({@code newAttemptId}, plus the Google {@code credential} when linking Google).
+     */
     @PostMapping(path = "/v1/me/auth-methods", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> linkMethod(@RequestBody JsonNode body, HttpServletRequest request) {
         var token = mutating(request);
+        boolean hasCredential = body != null && body.has("credential");
         if (body == null || !body.isObject() || !body.path("provider").isTextual()
-                || !body.path("attemptId").isTextual()
-                || body.size() != (body.has("credential") ? 3 : 2)
-                || (body.has("credential") && !body.get("credential").isTextual())) throw invalid();
-        attemptId(body);
+                || !body.path("currentAttemptId").isTextual() || !body.path("newAttemptId").isTextual()
+                || body.size() != (hasCredential ? 4 : 3) || (hasCredential && !body.get("credential").isTextual())
+                || !body.get("currentAttemptId").asText().matches("[0-9a-f]{32}")
+                || !body.get("newAttemptId").asText().matches("[0-9a-f]{32}")
+                || body.get("currentAttemptId").asText().equals(body.get("newAttemptId").asText()))
+            throw invalid();
         IdentityProvider provider = switch (body.get("provider").asText()) {
             case "google" -> IdentityProvider.GOOGLE;
             case "institutional_email" -> IdentityProvider.INSTITUTIONAL_EMAIL;
             default -> throw invalid();
         };
-        if ((provider == IdentityProvider.GOOGLE) != body.has("credential")) throw invalid();
+        if ((provider == IdentityProvider.GOOGLE) != hasCredential) throw invalid();
         var service = methods.getIfAvailable();
         if (service == null) throw unavailable();
-        var linked = service.link(token.sessionId(), token.userId(), provider, body.get("attemptId").asText(),
-                body.has("credential") ? body.get("credential").asText() : null);
+        var linked = service.link(token.sessionId(), token.userId(), provider,
+                body.get("currentAttemptId").asText(), body.get("newAttemptId").asText(),
+                hasCredential ? body.get("credential").asText() : null);
         return ResponseEntity.status(HttpStatus.CREATED).header("Cache-Control", "no-store").body(method(linked));
     }
 
@@ -186,9 +194,6 @@ public final class AuthApiController {
         return ApiErrors.of(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", request, clock);
     }
 
-    public record ActivityResponse(String sessionId, String status, long serverTime, long lastActivityAt,
-                                   long windowExpiresAt, long inactivityExpiresAt, long absoluteExpiresAt,
-                                   long expiresAt) { }
     public record AttemptResponse(String attemptId, String method, String operation, String target,
                                   String nonce, long expiresAt) { }
     public record MethodResponse(String provider, String email, String status) { }
