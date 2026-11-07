@@ -1955,8 +1955,8 @@ class SqlUserStoreIT {
                 """, "a".repeat(32), "ana@tec.ac.cr", "b".repeat(64), now, now + 600_000);
         Flyway latest = Flyway.configure().dataSource(upgrade).defaultSchema("dbo")
                 .baselineOnMigrate(false).cleanDisabled(true).load();
-        latest.validate();
         assertEquals(1, latest.migrate().migrationsExecuted);
+        latest.validate();
         assertEquals(checksum, upgradeJdbc.queryForObject(
                 "SELECT checksum FROM dbo.flyway_schema_history WHERE [version]='12'", Integer.class));
         assertEquals("13", latest.info().current().getVersion().getVersion());
