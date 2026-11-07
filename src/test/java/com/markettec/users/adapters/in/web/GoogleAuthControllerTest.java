@@ -169,14 +169,10 @@ class GoogleAuthControllerTest {
         verifyNoInteractions(login, sessions, users);
     }
 
-    @Test void emailEndpointsAreUnavailableAndNeverReachGoogleRegistration() throws Exception {
-        for (String path : new String[]{"/v1/auth/email/requests", "/v1/auth/email/confirm"}) {
+    @Test void emailRoutesAreNotOwnedByTheGoogleController() throws Exception {
+        for (String path : new String[]{"/v1/auth/email/requests", "/v1/auth/email/confirm"})
             mvc.perform(post(path).header("Origin", ORIGIN).header("X-MTEC-Client", "web")
-                    .contentType(MediaType.APPLICATION_JSON).content("{}"))
-                    .andExpect(status().isServiceUnavailable())
-                    .andExpect(jsonPath("$.error.code").value("AUTH_TEMPORARILY_UNAVAILABLE"));
-        }
-        mvc.perform(get("/v1/auth/email/confirm")).andExpect(status().isMethodNotAllowed());
+                    .contentType(MediaType.APPLICATION_JSON).content("{}")).andExpect(status().isNotFound());
         verifyNoInteractions(registration, login, sessions, users);
     }
 
@@ -194,10 +190,6 @@ class GoogleAuthControllerTest {
                 .content("{\"method\":\"google\",\"purpose\":\"register\"}"))
                 .andExpect(status().isServiceUnavailable());
         blockedMvc.perform(proof("/v1/auth/google/registrations")).andExpect(status().isServiceUnavailable());
-        blockedMvc.perform(post("/v1/auth/email/requests").contentType(MediaType.APPLICATION_JSON)
-                .content("{}")).andExpect(status().isServiceUnavailable());
-        blockedMvc.perform(post("/v1/auth/email/confirm").contentType(MediaType.APPLICATION_JSON)
-                .content("{}")).andExpect(status().isServiceUnavailable());
         when(login.complete(ATTEMPT_ID, SECRET, "google-proof"))
                 .thenThrow(new SessionRejectedException());
         blockedMvc.perform(proof("/v1/auth/google")

@@ -62,6 +62,12 @@ public final class InMemoryUserStore implements UserRepository, ExternalIdentity
     }
 
     @Override
+    public synchronized java.util.List<ExternalIdentity> findByUser(UserId userId) {
+        Objects.requireNonNull(userId);
+        return identities.values().stream().filter(i -> i.userId().equals(userId)).toList();
+    }
+
+    @Override
     public synchronized void replaceStatus(ExternalIdentity expected, IdentityLinkStatus status) {
         Objects.requireNonNull(expected);
         Objects.requireNonNull(status);
