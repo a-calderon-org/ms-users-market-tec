@@ -2173,7 +2173,7 @@ class SqlUserStoreIT {
         assertEquals("a".repeat(64), jdbc.queryForObject("SELECT verifier FROM dbo.email_proof_challenges WHERE attempt_id=?",
                 String.class, f.email().attemptId()));
         // a different integrity failure (orphan attempt id) is NOT reported as a replay
-        assertThrows(DataIntegrityViolationException.class, () -> store.execute(() -> {
+        assertThrows(UserPersistenceException.class, () -> store.execute(() -> {
             proven.record("f".repeat(32), key); return null; }));
     }
 
