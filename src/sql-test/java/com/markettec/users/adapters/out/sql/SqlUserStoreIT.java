@@ -102,7 +102,7 @@ class SqlUserStoreIT {
             }
             Flyway flyway = Flyway.configure().dataSource(source).defaultSchema("dbo")
                     .baselineOnMigrate(false).cleanDisabled(true).load();
-            assertEquals(2, flyway.migrate().migrationsExecuted);
+            assertEquals(3, flyway.migrate().migrationsExecuted);
             assertEquals(0, flyway.migrate().migrationsExecuted);
             SqlSchemaValidator.validate(source, IsolatedSqlServer.DATABASE);
             store = newStore();
