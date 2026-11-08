@@ -13,7 +13,6 @@ import com.nimbusds.jwt.SignedJWT;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -211,7 +210,7 @@ public final class GoogleAuthController {
         String origin = request.getHeader("Origin");
         String method = request.getHeader("Access-Control-Request-Method");
         String requested = request.getHeader("Access-Control-Request-Headers");
-        if (origin == null || !origins.contains(origin) || !"POST".equals(method) || requested == null
+        if (!request.isSecure() || origin == null || !origins.contains(origin) || !"POST".equals(method) || requested == null
                 || Arrays.stream(requested.split(",")).map(String::trim).map(String::toLowerCase)
                     .anyMatch(h -> !Set.of("content-type", "x-mtec-client", "x-csrf-token", "x-correlation-id").contains(h)))
             throw new AuthHttpException(HttpStatus.FORBIDDEN, "ORIGIN_DENIED");
@@ -222,7 +221,8 @@ public final class GoogleAuthController {
 
     private HttpHeaders guard(HttpServletRequest request, boolean continuation) {
         String origin = request.getHeader("Origin");
-        if (origin == null || !origins.contains(origin))
+        // Same rule as the session adapters: the container's own TLS view, never a client header.
+        if (!request.isSecure() || origin == null || !origins.contains(origin))
             throw new AuthHttpException(HttpStatus.FORBIDDEN, "ORIGIN_DENIED");
         if (!"web".equals(request.getHeader("X-MTEC-Client")))
             throw new AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");
@@ -271,14 +271,9 @@ public final class GoogleAuthController {
     private static boolean equal(String a, String b) {
         return MessageDigest.isEqual(a.getBytes(StandardCharsets.US_ASCII), b.getBytes(StandardCharsets.US_ASCII));
     }
-    private static boolean validOrigin(String value) {
-        try {
-            URI uri = URI.create(value);
-            return "https".equals(uri.getScheme()) && uri.getHost() != null && uri.getPort() == -1
-                    && (uri.getRawPath() == null || uri.getRawPath().isEmpty())
-                    && uri.getRawQuery() == null && uri.getRawFragment() == null
-                    && !uri.getHost().equals("localhost") && !uri.getHost().endsWith(".invalid");
-        } catch (RuntimeException invalid) { return false; }
+    /** Shared with the Magic Link adapter, which is bound to the same allow-list property. */
+    static boolean validOrigin(String value) {
+        return BrowserOrigins.isCanonicalHttpsOrigin(value);
     }
     public record AttemptResponse(String attemptId, String method, String purpose, long expiresAt,
             String csrfToken, String nonce) {

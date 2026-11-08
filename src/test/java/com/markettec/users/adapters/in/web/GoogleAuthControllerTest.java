@@ -52,7 +52,7 @@ class GoogleAuthControllerTest {
         var controller = new GoogleAuthController(login, registration, sessions,
                 users, clock, Set.of(ORIGIN), true);
         mvc = MockMvcBuilders.standaloneSetup(controller)
-                .addFilters(new CorrelationIdFilter(), new GooglePreflightFilter(controller)).build();
+                .addFilters(new CorrelationIdFilter(), new GooglePreflightFilter(controller)).defaultRequest(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/").secure(true)).build();
     }
 
     @Test void loginAndRegistrationAttemptsKeepPurposeAndPreSessionProofSeparate() throws Exception {
@@ -178,7 +178,7 @@ class GoogleAuthControllerTest {
 
     @Test void registrationDisabledByDefaultWhileLoginRemainsAvailable() throws Exception {
         var blocked = new GoogleAuthController(login, registration, sessions, users, clock, Set.of(ORIGIN));
-        var blockedMvc = MockMvcBuilders.standaloneSetup(blocked).build();
+        var blockedMvc = MockMvcBuilders.standaloneSetup(blocked).defaultRequest(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/").secure(true)).build();
         when(login.begin()).thenReturn(new GoogleLoginService.Challenge(ATTEMPT_ID, "d".repeat(64),
                 SECRET, clock.instant().plusSeconds(300)));
         blockedMvc.perform(post("/v1/auth/attempts").header("Origin", ORIGIN)
@@ -208,6 +208,35 @@ class GoogleAuthControllerTest {
                 .header("Access-Control-Request-Method", "POST")
                 .header("Access-Control-Request-Headers", "Ocp-Apim-Subscription-Key"))
                 .andExpect(status().isForbidden());
+    }
+
+    /** Plain HTTP is refused for every Google route and preflight; client forwarding headers prove nothing. */
+    @Test void insecureTransportIsRefusedAndForwardedHeadersAreNotEvidence() throws Exception {
+        for (String path : new String[]{"/v1/auth/attempts", "/v1/auth/google", "/v1/auth/google/registrations"}) {
+            mvc.perform(proof(path).secure(false).header("X-Forwarded-Proto", "https").header("Forwarded", "proto=https"))
+                    .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("ORIGIN_DENIED"))
+                    .andExpect(header().doesNotExist("Set-Cookie"));
+            mvc.perform(options(path).secure(false).header("Origin", ORIGIN).header("X-Forwarded-Proto", "https")
+                            .header("Access-Control-Request-Method", "POST")
+                            .header("Access-Control-Request-Headers", "Content-Type,X-CSRF-Token,X-MTEC-Client"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+        }
+        verifyNoInteractions(login, registration, sessions, users);
+    }
+
+    @Test void originsWithUserinfoOrNonOriginPartsAreRejected() {
+        for (String bad : new String[]{"https://fixture@app.markettec.example", "https://u:p@app.markettec.example",
+                "http://app.markettec.example", "https://app.markettec.example/", "https://*.markettec.example", "*"}) {
+            org.junit.jupiter.api.Assertions.assertFalse(GoogleAuthController.validOrigin(bad), bad);
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> new GoogleAuthController(login, registration, sessions, users, clock, Set.of(bad)), bad);
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> new GoogleAuthController(login, registration, sessions, users, clock, ORIGIN, bad, true), bad);
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> new ProtectedApiCorsFilter(Set.of(bad)), bad);
+        }
+        org.junit.jupiter.api.Assertions.assertTrue(GoogleAuthController.validOrigin(ORIGIN));
     }
 
     @Test void enabledConstructorRequiresExplicitVerifiedHttpsTopology() {

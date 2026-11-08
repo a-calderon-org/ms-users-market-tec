@@ -62,6 +62,28 @@ class ProtectedApiCorsFilterTest {
                 .andExpect(status().isNoContent());
     }
 
+    /** Codex reproduction: these were configurable and earned a credentialed preflight. */
+    @Test void reservedAndBrowserIpv4OriginsCannotBeConfiguredNorEarnCredentialedPreflight() throws Exception {
+        for (String forbidden : java.util.List.of("https://invalid", "https://0x7f000001", "https://0xffffffff",
+                "https://2130706433", "https://0177.0.0.1", "https://127.1", "https://0x7f.0.0.1")) {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> new ProtectedApiCorsFilter(Set.of(forbidden)), forbidden);
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> new ProtectedApiCorsFilter(Set.of(ORIGIN, forbidden)), forbidden);
+            // With a legitimate allow-list, the forbidden origin is refused on the real preflight path.
+            mvc.perform(options("/v1/me/profile").header("Origin", forbidden)
+                            .header("Access-Control-Request-Method", "GET")
+                            .header("Access-Control-Request-Headers", "authorization"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(header().doesNotExist("Access-Control-Allow-Origin"))
+                    .andExpect(header().doesNotExist("Access-Control-Allow-Credentials"));
+        }
+        mvc.perform(options("/v1/me/profile").header("Origin", ORIGIN).header("Access-Control-Request-Method", "GET"))
+                .andExpect(status().isNoContent())
+                .andExpect(header().string("Access-Control-Allow-Origin", ORIGIN))
+                .andExpect(header().string("Access-Control-Allow-Credentials", "true"));
+    }
+
     @Test void preflightRejectsOtherOriginsMethodsHeadersAndNeverUsesWildcard() throws Exception {
         mvc.perform(options("/v1/me/profile").header("Origin", "https://evil.example")
                 .header("Access-Control-Request-Method", "GET")).andExpect(status().isForbidden())

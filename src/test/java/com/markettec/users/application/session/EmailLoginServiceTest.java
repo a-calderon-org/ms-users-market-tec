@@ -176,4 +176,50 @@ class EmailLoginServiceTest {
         assertEquals(0, issued);
         verify(sessions, never()).issue(any(), any());
     }
+
+    /** Transaction whose commit fails after the work ran: the rolled-back link must never be mailed. */
+    @Test void aLinkWhoseTransactionRollsBackIsNeverDelivered() {
+        var tx = new com.markettec.users.application.ports.out.UserTransactions() {
+            public <T> T execute(java.util.function.Supplier<T> work) {
+                work.get();
+                rows.clear(); // rollback
+                throw new IllegalStateException("commit failed");
+            }
+        };
+        var failing = new EmailLoginService(repo, tx, store, store, pending, new UuidUserIdGenerator(), sessions,
+                ignored -> "jwt", (to, id, secret) -> sent.add(new String[]{to.address(), id, secret}), clock,
+                new SecureRandom());
+        assertThrows(IllegalStateException.class, () -> failing.request(new Email("ana@tec.ac.cr")));
+        assertTrue(sent.isEmpty());
+        assertTrue(rows.isEmpty());
+    }
+
+    @Test void deliveryHappensOnlyAfterTheAttemptCommitted() {
+        var committed = new java.util.concurrent.atomic.AtomicBoolean();
+        var tx = new com.markettec.users.application.ports.out.UserTransactions() {
+            public <T> T execute(java.util.function.Supplier<T> work) {
+                T result = work.get();
+                committed.set(true);
+                return result;
+            }
+        };
+        var ordered = new EmailLoginService(repo, tx, store, store, pending, new UuidUserIdGenerator(), sessions,
+                ignored -> "jwt", (to, id, secret) -> {
+                    assertTrue(committed.get(), "link sent before commit");
+                    assertTrue(rows.containsKey(id), "link sent for an attempt that is not stored");
+                    sent.add(new String[]{to.address(), id, secret});
+                }, clock, new SecureRandom());
+        ordered.request(new Email("ana@tec.ac.cr"));
+        assertEquals(1, sent.size());
+    }
+
+    /** A provider failure after commit spends one request but leaves no usable link and no session. */
+    @Test void deliveryFailureAfterCommitIssuesNothing() {
+        var broken = new EmailLoginService(repo, store, store, store, pending, new UuidUserIdGenerator(), sessions,
+                ignored -> "jwt", (to, id, secret) -> { throw new EmailDeliveryException(); }, clock, new SecureRandom());
+        assertThrows(EmailDeliveryException.class, () -> broken.request(new Email("ana@tec.ac.cr")));
+        assertEquals(1, rows.size());
+        verify(sessions, never()).issue(any(), any());
+        verify(sessions, never()).createAuthenticated(any());
+    }
 }

@@ -5,7 +5,6 @@ import com.markettec.users.application.session.SessionRejectedException;
 import com.markettec.users.domain.model.UserDomainException;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
-import java.net.URI;
 import java.time.Clock;
 import java.util.Arrays;
 import java.util.Enumeration;
@@ -147,13 +146,7 @@ public final class SessionBootstrapController {
     }
 
     private static boolean validOrigin(String value) {
-        try {
-            URI uri = URI.create(value);
-            return "https".equals(uri.getScheme()) && uri.getHost() != null && uri.getPort() == -1
-                    && uri.getUserInfo() == null && (uri.getRawPath() == null || uri.getRawPath().isEmpty())
-                    && uri.getRawQuery() == null && uri.getRawFragment() == null
-                    && !uri.getHost().equals("localhost") && !uri.getHost().endsWith(".invalid");
-        } catch (RuntimeException invalid) { return false; }
+        return BrowserOrigins.isCanonicalHttpsOrigin(value);
     }
 
     public record AuthenticatedUser(String userId, String email, String nombre, String fotoPerfil) { }

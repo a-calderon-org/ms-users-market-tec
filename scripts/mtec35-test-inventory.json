@@ -1,5 +1,5 @@
 {
-  "normal_count": 354,
+  "normal_count": 392,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -257,7 +257,9 @@
       "preflightAllowsExactOriginAndHeadersOnly",
       "registrationDisabledByDefaultWhileLoginRemainsAvailable",
       "registrationReplayAndInvalidProofHaveSafeErrors",
-      "registrationReturnsSessionFromCanonicalAndAliasRoutes"
+      "registrationReturnsSessionFromCanonicalAndAliasRoutes",
+      "insecureTransportIsRefusedAndForwardedHeadersAreNotEvidence",
+      "originsWithUserinfoOrNonOriginPartsAreRejected"
     ],
     "com.markettec.users.adapters.in.web.GoogleHttpDisabledTest": [
       "defaultApplicationDoesNotExposeGoogleAuthRoutes",
@@ -291,6 +293,74 @@
     ],
     "com.markettec.users.adapters.in.web.HealthControllerTest": [
       "identityEndpointsAreAbsentWhenJwtIsDisabled"
+    ],
+    "com.markettec.users.adapters.in.web.DefaultExposureContractTest": [
+      "everyRiskFlagDefaultsToFalse",
+      "onlyHealthIsServedAndEveryGatedOperationIsAnInertNotFound",
+      "preflightGrantsNoOriginForAnyGatedOperation"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryTest": [
+      "everyEffectiveMappingIsInventoried",
+      "implicitMethodsOnHealthAreReadOnlyAndGrantNoCors",
+      "directErrorRouteDisclosesNothing"
+    ],
+    "com.markettec.users.adapters.in.web.EmailAuthControllerTest": [
+      "constructionFailsClosedWithoutExplicitHttpsOrigins",
+      "insecureTransportIsRefusedAndForwardedHeadersAreNotEvidence",
+      "getAndHeadNeverReachTheServiceOrConsumeALink"
+    ],
+    "com.markettec.users.adapters.out.mail.HttpEmailLinkSenderTest": [
+      "complete202IsAcceptedWithSecretOnlyInTheFragment",
+      "fast202HeadersWithDelayedBodyAreCutAtTheDeadlineAsUncertainAcceptance",
+      "bodyThatNeverEndsIsCutAtTheDeadline",
+      "silentProviderTimesOutWithoutAStatus",
+      "provider5xxIsRejectedWithoutRetry",
+      "disconnectWithoutResponseIsATransportFailure",
+      "interruptionCancelsTheExchangeAndRestoresTheFlag",
+      "configurationFailsClosed",
+      "formatterDropsUnknownMailFieldsAndValues"
+    ],
+    "com.markettec.users.application.session.EmailLoginServiceTest": [
+      "aLinkWhoseTransactionRollsBackIsNeverDelivered",
+      "deliveryHappensOnlyAfterTheAttemptCommitted",
+      "deliveryFailureAfterCommitIssuesNothing"
+    ],
+    "com.markettec.users.adapters.in.web.BrowserOriginsTest": [
+      "canonicalOriginsAreAccepted",
+      "everyAdapterRejectsTheVariantsForAllowListsAndPublicApiOrigins",
+      "nonCanonicalOrExcludedOriginsAreRejectedWithoutResolvingNames",
+      "hostsABrowserWouldParseAsIpv4AreRejected"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryMutationTest$FunctionalRouteMutation": [
+      "theMutatedFunctionalRouteIsReallyReachable",
+      "uninventoriedRouterFunctionIsRejected"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryMutationTest$OpaqueHandlerMappingMutation": [
+      "unenumerableHandlerMappingFailsClosed"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryMutationTest$OrdinaryMappingMutation": [
+      "ordinaryUninventoriedGetMappingIsRejected"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryMutationTest$OverloadWithParamsMutation": [
+      "overloadOfHealthWithParamsConditionIsRejected"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryMutationTest$UrlHandlerMappingMutation": [
+      "uninventoriedUrlHandlerMappingIsRejected"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryMutationTest$VerbPatternAndConditionMutation": [
+      "otherVerbAliasPatternAndHeaderConditionsAreRejected"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryMutationTest$CaseInsensitiveMatchingMutation": [
+      "caseInsensitivePathMatchingIsRejectedByTheMatchingRule"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryMutationTest$GlobalCorsMappingMutation": [
+      "globalCorsConfigurationWithoutNewRoutesIsRejected"
+    ],
+    "com.markettec.users.adapters.in.web.HttpSurfaceInventoryMutationTest$OpaqueRequestMappingSubclassMutation": [
+      "requestMappingSubclassServingHiddenRoutesIsUnenumerable"
+    ],
+    "com.markettec.users.adapters.in.web.ProtectedApiCorsFilterTest": [
+      "reservedAndBrowserIpv4OriginsCannotBeConfiguredNorEarnCredentialedPreflight"
     ]
   }
 }

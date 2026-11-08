@@ -5,7 +5,6 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.net.URI;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -112,12 +111,6 @@ public final class ProtectedApiCorsFilter extends OncePerRequestFilter {
     }
 
     private static boolean validOrigin(String value) {
-        try {
-            URI uri = URI.create(value);
-            return "https".equals(uri.getScheme()) && uri.getHost() != null && uri.getPort() == -1
-                    && (uri.getRawPath() == null || uri.getRawPath().isEmpty())
-                    && uri.getRawQuery() == null && uri.getRawFragment() == null
-                    && !uri.getHost().equals("localhost") && !uri.getHost().endsWith(".invalid");
-        } catch (RuntimeException invalid) { return false; }
+        return BrowserOrigins.isCanonicalHttpsOrigin(value);
     }
 }
