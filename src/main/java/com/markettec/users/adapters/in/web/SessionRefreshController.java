@@ -8,7 +8,6 @@ import com.markettec.users.domain.model.UserDomainException;
 import com.nimbusds.jwt.SignedJWT;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
-import java.net.URI;
 import java.text.ParseException;
 import java.time.Clock;
 import java.time.Duration;
@@ -186,13 +185,7 @@ public final class SessionRefreshController {
     }
 
     private static boolean validOrigin(String value) {
-        try {
-            URI uri = URI.create(value);
-            return "https".equals(uri.getScheme()) && uri.getHost() != null && uri.getPort() == -1
-                    && uri.getUserInfo() == null && (uri.getRawPath() == null || uri.getRawPath().isEmpty())
-                    && uri.getRawQuery() == null && uri.getRawFragment() == null
-                    && !uri.getHost().equals("localhost") && !uri.getHost().endsWith(".invalid");
-        } catch (RuntimeException invalid) { return false; }
+        return BrowserOrigins.isCanonicalHttpsOrigin(value);
     }
 
     private static final class RefreshHttpException extends RuntimeException {

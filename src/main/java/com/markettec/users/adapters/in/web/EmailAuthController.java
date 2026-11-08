@@ -66,7 +66,9 @@ public final class EmailAuthController {
         this.sessions = sessions;
         this.users = users;
         this.clock = clock;
-        if (origins == null || origins.isEmpty()) throw new IllegalArgumentException("Browser origins are required");
+        // Fails closed on its own instead of relying on the Google adapter's startup check.
+        if (origins == null || origins.isEmpty() || origins.stream().anyMatch(o -> !GoogleAuthController.validOrigin(o)))
+            throw new IllegalArgumentException("Explicit HTTPS browser origins are required");
         this.origins = Set.copyOf(origins);
     }
 
@@ -172,7 +174,8 @@ public final class EmailAuthController {
 
     private HttpHeaders guard(HttpServletRequest request) {
         String origin = request.getHeader("Origin");
-        if (origin == null || !origins.contains(origin))
+        // The container's own TLS view; Forwarded/X-Forwarded-Proto from a client is never trusted here.
+        if (!request.isSecure() || origin == null || !origins.contains(origin))
             throw new GoogleAuthController.AuthHttpException(HttpStatus.FORBIDDEN, "ORIGIN_DENIED");
         if (!"web".equals(request.getHeader("X-MTEC-Client")))
             throw new GoogleAuthController.AuthHttpException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST");

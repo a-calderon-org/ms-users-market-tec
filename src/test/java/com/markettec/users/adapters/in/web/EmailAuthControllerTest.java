@@ -41,8 +41,8 @@ class EmailAuthControllerTest {
         when(present.getIfAvailable()).thenReturn(login);
         ObjectProvider<EmailLoginService> absent = mock(ObjectProvider.class);
         mvc = MockMvcBuilders.standaloneSetup(new EmailAuthController(present, sessions, users, clock, Set.of(ORIGIN)))
-                .addFilters(new CorrelationIdFilter()).build();
-        unavailable = MockMvcBuilders.standaloneSetup(new EmailAuthController(absent, sessions, users, clock, Set.of(ORIGIN))).build();
+                .addFilters(new CorrelationIdFilter()).defaultRequest(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/").secure(true)).build();
+        unavailable = MockMvcBuilders.standaloneSetup(new EmailAuthController(absent, sessions, users, clock, Set.of(ORIGIN))).defaultRequest(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/").secure(true)).build();
     }
 
     private static String csrf() {
@@ -98,6 +98,52 @@ class EmailAuthControllerTest {
                 .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.error.code").value("AUTH_TEMPORARILY_UNAVAILABLE"));
         unavailable.perform(bound("/v1/auth/email/confirm", "{\"attemptId\":\"" + ATTEMPT + "\",\"token\":\"" + SECRET + "\"}"))
                 .andExpect(status().isServiceUnavailable());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test void constructionFailsClosedWithoutExplicitHttpsOrigins() {
+        ObjectProvider<EmailLoginService> any = mock(ObjectProvider.class);
+        for (Set<String> bad : java.util.List.of(Set.<String>of(), Set.of("http://app.markettec.example"),
+                Set.of("*"), Set.of("https://app.markettec.example/path"), Set.of("https://localhost"),
+                Set.of(ORIGIN, "https://app.markettec.example:8443"), Set.of("https://fixture@app.markettec.example"),
+                Set.of("https://fixture:pw@app.markettec.example"), Set.of("HTTPS://app.markettec.example"),
+                Set.of("https://app.markettec.example/"), Set.of("https://app.markettec.example?x=1"),
+                Set.of("https://app.markettec.example#x"), Set.of("https://*.markettec.example"), Set.of("null"),
+                Set.of("https://")))
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> new EmailAuthController(any, sessions, users, clock, bad), bad.toString());
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> new EmailAuthController(any, sessions, users, clock, ""));
+    }
+
+    /** Plain-HTTP requests are refused before any work, even when a client claims HTTPS in a header. */
+    @Test void insecureTransportIsRefusedAndForwardedHeadersAreNotEvidence() throws Exception {
+        for (var request : java.util.List.of(
+                json("/v1/auth/email/requests", "{\"email\":\"a@tec.ac.cr\"}"),
+                bound("/v1/auth/email/confirm", "{\"attemptId\":\"" + ATTEMPT + "\",\"token\":\"" + SECRET + "\"}"))) {
+            mvc.perform(request.secure(false).header("X-Forwarded-Proto", "https")
+                            .header("Forwarded", "proto=https;host=app.markettec.example"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("ORIGIN_DENIED"))
+                    .andExpect(header().doesNotExist("Set-Cookie"));
+        }
+        verifyNoInteractions(login, sessions, users);
+    }
+
+    /** Link scanners and prefetchers use GET/HEAD; neither may reach the service or consume a link. */
+    @Test void getAndHeadNeverReachTheServiceOrConsumeALink() throws Exception {
+        for (String path : new String[]{"/v1/auth/email/confirm", "/v1/auth/email/requests"}) {
+            String query = "?attemptId=" + ATTEMPT + "&token=" + SECRET;
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path + query)
+                            .header("Origin", ORIGIN).header("X-MTEC-Client", "web")
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-mtec-email-attempt", BROWSER)))
+                    .andExpect(status().isMethodNotAllowed());
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head(path + query)
+                            .header("Origin", ORIGIN).header("X-MTEC-Client", "web")
+                            .cookie(new jakarta.servlet.http.Cookie("__Host-mtec-email-attempt", BROWSER)))
+                    .andExpect(status().isMethodNotAllowed());
+        }
+        verifyNoInteractions(login, sessions, users);
     }
 
     @Test void deliveryFailureIsTemporaryAndLeaksNothing() throws Exception {

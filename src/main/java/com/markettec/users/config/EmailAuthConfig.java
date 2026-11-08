@@ -45,7 +45,7 @@ public class EmailAuthConfig {
             @Value("${users.email.from:}") String from,
             @Value("${users.email.login-link-base-url:}") String linkBase) {
         return new HttpEmailLinkSender(client(), endpoint, apiKey, from, linkBase, SUBJECT,
-                "Usa este enlace para iniciar sesión. Vence en 10 minutos y solo funciona una vez:");
+                "Usa este enlace para iniciar sesión. Vence en 10 minutos y solo funciona una vez:", "login");
     }
 
     @Bean
@@ -57,7 +57,7 @@ public class EmailAuthConfig {
             @Value("${users.email.proof-link-base-url:}") String linkBase) {
         return new HttpEmailLinkSender(client(), endpoint, apiKey, from, linkBase,
                 "Confirma tu identidad en MarketTec",
-                "Usa este enlace para confirmar la operación. Vence en 5 minutos y solo funciona una vez:");
+                "Usa este enlace para confirmar la operación. Vence en 5 minutos y solo funciona una vez:", "proof");
     }
 
     @Bean
