@@ -31,7 +31,13 @@ compone la fundación de health. Con `local`, se añaden los casos de uso y un �
 almacén en memoria: todos los datos se pierden al detener el proceso. El puerto de
 autorización de vínculos rechaza todas las solicitudes en esta configuración.
 
-El único endpoint implementado es `GET /health`; el resto devuelve 404. El header
+`GET /health` es el único endpoint de la fundación original y el único activo cuando
+no se habilita ningún flag; con la configuración por defecto el resto devuelve 404. Los
+perfiles `sql-*` pueden registrar, tras sus flags (todos apagados por defecto), los
+adaptadores HTTP de Google, sesión, perfil, JWKS y metadata, así como código de Magic
+Link, pruebas y vínculos que el contrato mantiene deshabilitado. El inventario de rutas y
+sus diferencias con el OpenAPI está en `docs/MTEC15_B07_RECONCILIATION_MATRIX.md` de
+`a-calderon-org/market_tec`; ninguna de esas rutas está aprobada por B07. El header
 `X-Correlation-ID` sirve para correlación, nunca para establecer identidad. Los casos
 de uso se invocan dentro del proceso mediante `UserUseCases`; no se añaden rutas
 provisionales que acepten IDs, correos o indicadores de verificación como autenticación.
