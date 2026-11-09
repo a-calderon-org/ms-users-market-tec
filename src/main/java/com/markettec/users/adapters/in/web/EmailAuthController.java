@@ -36,13 +36,13 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Institutional Magic Link login. Same browser origin controls as the Google adapter; the link is
- * only redeemed by an explicit POST. Without the {@code users.email.enabled} configuration the
- * routes fail closed with 503 (no delivery is simulated).
+ * Institutional Magic Link login, independent of Google: registered only with {@code users.email.enabled=true}
+ * (which also wires the mail provider), whatever the Google flags are. Same browser origin, HTTPS, cookie and
+ * CSRF controls as the Google adapter; the link is only redeemed by an explicit POST. No delivery is simulated.
  */
 @RestController
 @Profile("sql-dev | sql-appservice | sql-integration")
-@ConditionalOnProperty(prefix = "users.google.http", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(prefix = "users.email", name = "enabled", havingValue = "true")
 public final class EmailAuthController {
     private static final String REFRESH = "__Host-mtec-refresh";
     private static final String ATTEMPT = "__Host-mtec-email-attempt";
@@ -55,7 +55,7 @@ public final class EmailAuthController {
     @Autowired
     public EmailAuthController(ObjectProvider<EmailLoginService> service, SessionAuthority sessions,
             UserRepository users, Clock clock,
-            @Value("${users.google.http.allowed-origins:}") String allowedOrigins) {
+            @Value("${users.email.allowed-origins:${users.google.http.allowed-origins:}}") String allowedOrigins) {
         this(service, sessions, users, clock, Arrays.stream(allowedOrigins.split(","))
                 .map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet()));
     }

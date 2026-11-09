@@ -20,8 +20,9 @@ import java.util.HexFormat;
 import java.util.Objects;
 
 /**
- * Independent institutional Magic Link authentication. The account is resolved only by the exact
- * (issuer, normalized address) identity key; an address already used by another account never merges.
+ * Independent institutional Magic Link authentication, repeatable for the same account. The account is
+ * resolved only by the exact (issuer, normalized address) identity key; an address already used by another
+ * account (e.g. Google) never merges.
  */
 public final class EmailLoginService {
     public static final String ISSUER = "urn:markettec:institutional-email";
@@ -85,8 +86,14 @@ public final class EmailLoginService {
 
     /**
      * Explicit POST confirmation from the requesting browser. Consumption and session issue commit together.
-     * An address that already belongs to an account never logs in on mailbox possession alone (B02):
-     * the link is spent and CONTINUITY_REQUIRED is returned without credentials.
+     * <ul>
+     *   <li>New institutional address: creates the account, its institutional identity and a session.</li>
+     *   <li>Existing institutional identity (exact issuer/address key): a new session for the same user.</li>
+     *   <li>Address owned only by another account (e.g. Google): never merged on address equality; the link
+     *       is spent and CONTINUITY_REQUIRED is returned without credentials.</li>
+     * </ul>
+     * The profile-address range lock is taken before the identity lookup, so concurrent first confirmations
+     * for one address serialize: the loser observes the winner's identity and signs in to the same user.
      */
     public GoogleLoginService.Result confirm(String attemptId, String browserSecret, String token) {
         if (attemptId == null || !attemptId.matches("[0-9a-f]{32}") || token == null || !token.matches("[0-9a-f]{64}")
@@ -109,8 +116,17 @@ public final class EmailLoginService {
             attempts.replace(attempt, attempt.consume());
             var email = attempt.recipient();
             var key = new ExternalIdentityKey(ISSUER, email.normalized());
-            if (identities.findByKey(key).isPresent() || emails.historicalEmailExists(email.normalized()))
-                return new Outcome(Kind.CONTINUITY, null);
+            boolean addressInUse = emails.historicalEmailExists(email.normalized()); // range lock first
+            var existing = identities.findByKey(key);
+            if (existing.isPresent()) {
+                var linked = existing.get();
+                if (linked.provider() != IdentityProvider.INSTITUTIONAL_EMAIL
+                        || linked.status() != IdentityLinkStatus.ACTIVE)
+                    return new Outcome(Kind.REJECTED, null);
+                return new Outcome(Kind.OK, issue(new VerifiedExternalIdentity(
+                        IdentityProvider.INSTITUTIONAL_EMAIL, key, email)));
+            }
+            if (addressInUse) return new Outcome(Kind.CONTINUITY, null);
             return new Outcome(Kind.OK, createAndIssue(email, key, now));
         });
         return switch (outcome.kind()) {
@@ -130,7 +146,11 @@ public final class EmailLoginService {
         users.replace(user, user.verifyProfileEmail(email));
         identities.insertOrGet(new ExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, key, userId,
                 email, IdentityLinkStatus.ACTIVE));
-        var evidence = new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, key, email);
+        return issue(new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL, key, email));
+    }
+
+    /** Session for an existing, active institutional identity (SessionAuthority re-checks link and user). */
+    private GoogleLoginService.Result issue(VerifiedExternalIdentity evidence) {
         var issued = sessions.issue(sessions.createAuthenticated(evidence), jwt);
         return new GoogleLoginService.Result(issued.jwt(), issued.sessionId(), issued.userId(),
                 issued.sessionDeadline(), issued.refreshToken(), issued.csrfToken());

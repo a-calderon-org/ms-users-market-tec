@@ -2009,6 +2009,78 @@ class SqlUserStoreIT {
         }
     }
 
+    // ---- Magic Link: repeatable institutional login without duplicate accounts ---------------------
+
+    private EmailLoginService magicLink(SqlUserStore users, List<String[]> outbox) {
+        var permit = new SessionActionAuthorization() {
+            public void requireRenewal(Session session) { }
+            public void requireAdmissibleActivity(Session session) { }
+        };
+        var authority = new SessionAuthority(new SqlSessionRepository(new JdbcTemplate(source)), users, users, users,
+                clock, new java.security.SecureRandom(), permit, csrfKeys());
+        return new EmailLoginService(new SqlEmailLoginAttemptRepository(new JdbcTemplate(source)), users, users, users,
+                new SqlPendingGoogleRegistrationRepository(new JdbcTemplate(source)), new UuidUserIdGenerator(),
+                authority, a -> "synthetic-jwt", (to, id, secret) -> outbox.add(new String[]{id, secret}), clock,
+                new java.security.SecureRandom());
+    }
+
+    private int accountsWithAddress(String address) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM dbo.profiles WHERE LOWER(correo)=LOWER(?)", Integer.class,
+                address);
+    }
+
+    @Test
+    void magicLinkCreatesTheAccountOnceAndASecondLinkSignsInToTheSameUser() {
+        var outbox = new java.util.concurrent.CopyOnWriteArrayList<String[]>();
+        var login = magicLink(store, outbox);
+        var address = new Email("magic.repeat@estudiantec.cr");
+        String firstBrowser = login.request(address);
+        var first = login.confirm(outbox.get(0)[0], firstBrowser, outbox.get(0)[1]);
+        String secondBrowser = login.request(address);
+        var second = login.confirm(outbox.get(1)[0], secondBrowser, outbox.get(1)[1]);
+        assertEquals(first.userId(), second.userId());
+        assertNotEquals(first.sessionId(), second.sessionId());
+        assertEquals(1, accountsWithAddress(address.address()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE user_id=?",
+                Integer.class, first.userId()));
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED, assertThrows(SessionRejectedException.class,
+                () -> login.confirm(outbox.get(1)[0], secondBrowser, outbox.get(1)[1])).reason());
+    }
+
+    @Test
+    void concurrentFirstConfirmationsForOneAddressYieldOneUser() throws Exception {
+        var outbox = new java.util.concurrent.CopyOnWriteArrayList<String[]>();
+        var address = new Email("magic.race@estudiantec.cr");
+        var one = magicLink(newStore(), outbox);
+        var two = magicLink(newStore(), outbox);
+        String browserOne = one.request(address);
+        String browserTwo = two.request(address);
+        var links = List.copyOf(outbox);
+        var results = concurrent(() -> one.confirm(links.get(0)[0], browserOne, links.get(0)[1]),
+                () -> two.confirm(links.get(1)[0], browserTwo, links.get(1)[1]));
+        assertEquals(results.get(0).userId(), results.get(1).userId());
+        assertEquals(1, accountsWithAddress(address.address()));
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM dbo.users u LEFT JOIN dbo.profiles p ON p.user_id=u.user_id WHERE p.user_id IS NULL
+                """, Integer.class));
+    }
+
+    @Test
+    void magicLinkNeverMergesAnAddressOwnedOnlyByAnotherAccount() {
+        var address = new Email("magic.google@estudiantec.cr");
+        User google = service().createUser(address, details, photo); // e.g. an account created through Google
+        var outbox = new java.util.concurrent.CopyOnWriteArrayList<String[]>();
+        var login = magicLink(store, outbox);
+        String browser = login.request(address);
+        assertEquals(SessionRejectedException.Reason.CONTINUITY_REQUIRED, assertThrows(SessionRejectedException.class,
+                () -> login.confirm(outbox.get(0)[0], browser, outbox.get(0)[1])).reason());
+        assertEquals(1, accountsWithAddress(address.address()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.external_identities WHERE user_id=?",
+                Integer.class, google.userId().value()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.sessions WHERE user_id=?",
+                Integer.class, google.userId().value()));
+    }
+
     // ---- MTEC-19/36: V12 -> V13 and exact two-proof identity linking -------------------------------
 
     @Test

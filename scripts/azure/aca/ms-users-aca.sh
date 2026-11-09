@@ -12,7 +12,9 @@
 #   app --sha    create/update the container app (flags false, Key Vault ref, probes, scale 0..1)
 #   sql-access   /32 SQL firewall rules for the app outbound IPs + least-privilege runtime user
 #   verify       HTTPS /health, sensitive routes closed, flags, Key Vault secret reference
-# Secrets are never printed. Authentication flags are never enabled by this script.
+#   email        opt-in Magic Link delivery: Key Vault ref to the mail provider key + USERS_EMAIL_* settings
+# Secrets are never printed. Authentication flags are never enabled by this script, except USERS_EMAIL_ENABLED
+# by the explicit `email` step.
 set -euo pipefail
 set +x
 
@@ -21,6 +23,7 @@ LOC="canadacentral"
 RG="acalderon-TEC"
 SQL_RG="a-calderon-org" SQL_SERVER="sql-markettec-dev" SQL_DB="sqldb-ms-users-dev"
 KV="kv-mtec-users-stg" CSRF_SECRET="users-csrf-keys-json" CSRF_KID="stg-2026-11"
+EMAIL_SECRET="users-email-provider-api-key"
 UAI="id-ms-users-stg" ACR="acrmsusersstg" LAW="log-ms-users-stg" ENV="cae-ms-users-stg2" APP="ca-ms-users-stg"
 REPO_SLUG="a-calderon-org/ms-users-market-tec"
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -170,5 +173,31 @@ json.dump({"properties":{"template":t}},sys.stdout)' > "$tmp" || rc=$?
     echo "auth flags false: $n/${#FLAGS[@]}"; [[ "$n" == "${#FLAGS[@]}" ]] || die "auth flags not all false"
     az containerapp secret list -g "$RG" -n "$APP" --query "[].{name:name,keyVaultUrl:keyVaultUrl}" -o table ;;
 
-  *) sed -n '2,16p' "$0"; exit 2 ;;
+  email)
+    # Magic Link via an HTTPS JSON mail API (Bearer key; body {from,to[],subject,text}, e.g. Resend
+    # https://api.resend.com/emails). The key must already be in Key Vault secret $EMAIL_SECRET; it is never
+    # read or printed here. Inputs (non-secret):
+    #   MTEC_EMAIL_PROVIDER_ENDPOINT    https endpoint of the provider
+    #   MTEC_EMAIL_FROM                 sender authorized by the provider (verified domain or address)
+    #   MTEC_EMAIL_LOGIN_LINK_BASE_URL  https://<SPA origin>/acceso/correo (no query or fragment)
+    for v in MTEC_EMAIL_PROVIDER_ENDPOINT MTEC_EMAIL_FROM MTEC_EMAIL_LOGIN_LINK_BASE_URL; do
+      [[ -n "${!v:-}" ]] || die "$v required"
+    done
+    [[ "$MTEC_EMAIL_PROVIDER_ENDPOINT" == https://* && "$MTEC_EMAIL_LOGIN_LINK_BASE_URL" == https://*/acceso/correo ]] \
+      || die "provider endpoint and link base must be https; link base must end in /acceso/correo"
+    az keyvault secret show --vault-name "$KV" -n "$EMAIL_SECRET" --query id -o none 2>/dev/null \
+      || die "Key Vault secret $EMAIL_SECRET is missing (az keyvault secret set --vault-name $KV -n $EMAIL_SECRET --file <key file>)"
+    id=$(uai_id)
+    pid=$(az identity show -g "$RG" -n "$UAI" --query principalId -o tsv)
+    az role assignment create --assignee-object-id "$pid" --assignee-principal-type ServicePrincipal \
+      --role "Key Vault Secrets User" --scope "$(az keyvault show -n "$KV" --query id -o tsv)/secrets/$EMAIL_SECRET" -o none
+    az containerapp secret set -g "$RG" -n "$APP" -o none \
+      --secrets "email-provider-api-key=keyvaultref:https://$KV.vault.azure.net/secrets/$EMAIL_SECRET,identityref:$id"
+    az containerapp update -g "$RG" -n "$APP" -o none --revision-suffix "e$(date +%s)" --set-env-vars \
+      USERS_EMAIL_ENABLED=true USERS_EMAIL_PROVIDER_API_KEY=secretref:email-provider-api-key \
+      "USERS_EMAIL_PROVIDER_ENDPOINT=$MTEC_EMAIL_PROVIDER_ENDPOINT" "USERS_EMAIL_FROM=$MTEC_EMAIL_FROM" \
+      "USERS_EMAIL_LOGIN_LINK_BASE_URL=$MTEC_EMAIL_LOGIN_LINK_BASE_URL"
+    log "Magic Link delivery enabled on $(az containerapp show -g "$RG" -n "$APP" --query properties.latestRevisionName -o tsv)" ;;
+
+  *) sed -n '2,18p' "$0"; exit 2 ;;
 esac

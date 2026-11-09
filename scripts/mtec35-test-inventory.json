@@ -1,5 +1,5 @@
 {
-  "normal_count": 437,
+  "normal_count": 443,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -8,6 +8,7 @@
     "approvedLinkIsIdempotentAndDoesNotOverwriteEvidence",
     "caughtNestedSqlFailureCannotCommitEarlierOuterWrites",
     "commitsUserProfileAndIdentityAtomically",
+    "concurrentFirstConfirmationsForOneAddressYieldOneUser",
     "concurrentLinksToDifferentOwnersHaveExactlyOneWinner",
     "concurrentLinksWithTheSameProofPairHaveExactlyOneWinner",
     "concurrentRecentProofConsumersHaveOneCommit",
@@ -37,6 +38,8 @@
     "independentHttpsListenersShareOneSqlRefreshGeneration",
     "independentJvmRefreshRotationReplayRollbackAndRevocation",
     "linkingAndDeactivationSerializeAcrossConnections",
+    "magicLinkCreatesTheAccountOnceAndASecondLinkSignsInToTheSameUser",
+    "magicLinkNeverMergesAnAddressOwnedOnlyByAnotherAccount",
     "migrationRetainsUnknownHistoricalRenewalUntilExplicitRenewal",
     "missingIdsAndIdentitiesReturnEmpty",
     "nestedUnitRollsBackToSavepointWithoutLosingOuterWrites",
