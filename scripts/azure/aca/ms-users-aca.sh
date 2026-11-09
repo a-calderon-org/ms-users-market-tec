@@ -100,7 +100,10 @@ case "$STEP" in
     for f in "${FLAGS[@]}"; do env_args+=("$f=false"); done
     if az containerapp show -g "$RG" -n "$APP" -o none 2>/dev/null; then
       az containerapp update -g "$RG" -n "$APP" --image "$ACR.azurecr.io/ms-users:$SHA" \
-        --revision-suffix "r${SHA:0:7}" --replace-env-vars "${env_args[@]}" --tags "sha=$SHA" -o none
+        --revision-suffix "r${SHA:0:7}" --replace-env-vars "${env_args[@]}" -o none
+      # `containerapp update --tags` replaces every tag on the resource; merge only `sha` instead.
+      az resource tag --ids "$(az containerapp show -g "$RG" -n "$APP" --query id -o tsv)" \
+        --is-incremental --tags "sha=$SHA" -o none
     else
       az containerapp create -g "$RG" -n "$APP" --environment "$ENV" --workload-profile-name Consumption \
         --image "$ACR.azurecr.io/ms-users:$SHA" --registry-server "$ACR.azurecr.io" --registry-identity "$id" \
