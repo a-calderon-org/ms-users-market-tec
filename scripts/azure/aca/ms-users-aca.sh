@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# ms-users — Azure Container Apps (Consumption) staging operations (MTEC-37, replaces App Service F1).
+#
+# Cost model (Canada Central, 30 days): scale to zero, 0.5 vCPU / 1 GiB, ACR Basic (~US$5),
+# Log Analytics capped at 0.1 GB/day (inside the 5 GB free ingestion). No custom VNet: a custom
+# VNet adds a billed Standard Load Balancer and public IPs (~US$22/month) and breaks the budget.
+# SQL access is one /32 firewall rule per outbound IP of the app; authentication stays Entra-only.
+#
+# Usage: scripts/azure/aca/ms-users-aca.sh <step> [--sha <commit>]
+#   infra        create identity, ACR, Log Analytics and the Container Apps environment
+#   image --sha  build linux/amd64 image of a clean checkout of <commit> (CI must be green) and push
+#   app --sha    create/update the container app (flags false, Key Vault ref, probes, scale 0..1)
+#   sql-access   /32 SQL firewall rules for the app outbound IPs + least-privilege runtime user
+#   verify       HTTPS /health, sensitive routes closed, flags, Key Vault secret reference
+# Secrets are never printed. Authentication flags are never enabled by this script.
+set -euo pipefail
+set +x
+
+SUB="${AZ_SUBSCRIPTION:-26db4383-add6-4e47-9ca1-3b208853ac17}"
+LOC="canadacentral"
+RG="acalderon-TEC"
+SQL_RG="a-calderon-org" SQL_SERVER="sql-markettec-dev" SQL_DB="sqldb-ms-users-dev"
+KV="kv-mtec-users-stg" CSRF_SECRET="users-csrf-keys-json" CSRF_KID="stg-2026-11"
+UAI="id-ms-users-stg" ACR="acrmsusersstg" LAW="log-ms-users-stg" ENV="cae-ms-users-stg2" APP="ca-ms-users-stg"
+REPO_SLUG="a-calderon-org/ms-users-market-tec"
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+FLAGS=(USERS_INTERNAL_JWT_ENABLED USERS_API_HTTP_ENABLED USERS_AUTH_METHOD_LINKING_ENABLED USERS_EMAIL_ENABLED
+  USERS_SESSION_LOGOUT_ENABLED USERS_SESSION_REFRESH_ENABLED USERS_SESSION_HTTP_ENABLED
+  USERS_SESSION_HTTP_HTTPS_TOPOLOGY_VERIFIED USERS_GOOGLE_VERIFIER_ENABLED USERS_GOOGLE_LOGIN_ENABLED
+  USERS_GOOGLE_REGISTRATION_ENABLED USERS_GOOGLE_HTTP_ENABLED USERS_GOOGLE_HTTP_SAME_SITE_VERIFIED)
+
+die() { echo "error: $*" >&2; exit 1; }
+log() { echo "==> $*" >&2; }
+STEP="${1:-}"; shift || true
+SHA=""
+while [[ $# -gt 0 ]]; do case "$1" in --sha) SHA="${2:-}"; shift 2 ;; *) die "unknown option $1" ;; esac; done
+az account set -s "$SUB"
+
+require_green_sha() {
+  [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || die "--sha <40-hex commit> required"
+  local ok
+  ok=$(gh run list -R "$REPO_SLUG" --commit "$SHA" --workflow "ms-users CI" --json conclusion -q '[.[]|select(.conclusion=="success")]|length')
+  [[ "$ok" -ge 1 ]] || die "no successful 'ms-users CI' run for $SHA"
+}
+
+uai_id() { az identity show -g "$RG" -n "$UAI" --query id -o tsv; }
+
+case "$STEP" in
+  infra)
+    az identity create -g "$RG" -n "$UAI" -l "$LOC" -o none
+    az acr show -n "$ACR" -o none 2>/dev/null || az acr create -g "$RG" -n "$ACR" -l "$LOC" --sku Basic --admin-enabled false -o none
+    az monitor log-analytics workspace show -g "$RG" -n "$LAW" -o none 2>/dev/null \
+      || az monitor log-analytics workspace create -g "$RG" -n "$LAW" -l "$LOC" --retention-time 30 --quota 0.1 -o none
+    pid=$(az identity show -g "$RG" -n "$UAI" --query principalId -o tsv)
+    az role assignment create --assignee-object-id "$pid" --assignee-principal-type ServicePrincipal --role AcrPull \
+      --scope "$(az acr show -n "$ACR" --query id -o tsv)" -o none
+    az role assignment create --assignee-object-id "$pid" --assignee-principal-type ServicePrincipal \
+      --role "Key Vault Secrets User" --scope "$(az keyvault show -n "$KV" --query id -o tsv)/secrets/$CSRF_SECRET" -o none
+    if ! az containerapp env show -g "$RG" -n "$ENV" -o none 2>/dev/null; then
+      ws=$(az monitor log-analytics workspace show -g "$RG" -n "$LAW" --query customerId -o tsv)
+      key=$(az monitor log-analytics workspace get-shared-keys -g "$RG" -n "$LAW" --query primarySharedKey -o tsv)
+      # `az containerapp env create` without a VNet now yields an Express environment, which rejects
+      # Key Vault secret references and system-assigned identities. Request WorkloadProfiles mode.
+      # (Azure for Students allows one environment per region.)
+      body=$(mktemp); trap 'rm -f "$body"' EXIT
+      python3 -c 'import json,sys; json.dump({"location":sys.argv[1],"properties":{"environmentMode":"WorkloadProfiles",
+        "workloadProfiles":[{"name":"Consumption","workloadProfileType":"Consumption"}],
+        "appLogsConfiguration":{"destination":"log-analytics","logAnalyticsConfiguration":{"customerId":sys.argv[2],"sharedKey":sys.argv[3]}}}},
+        open(sys.argv[4],"w"))' "$LOC" "$ws" "$key" "$body"
+      az rest --method put -o none --body "@$body" --url \
+        "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.App/managedEnvironments/$ENV?api-version=2025-10-02-preview"
+      until [[ "$(az containerapp env show -g "$RG" -n "$ENV" --query properties.provisioningState -o tsv)" == Succeeded ]]; do sleep 15; done
+    fi
+    log "infra ready" ;;
+
+  image)
+    require_green_sha
+    work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+    git -C "$ROOT" archive "$SHA" | tar -x -C "$work"
+    cp "$ROOT/Dockerfile" "$ROOT/.dockerignore" "$work/" 2>/dev/null || true
+    [[ -f "$work/Dockerfile" ]] || die "Dockerfile missing"
+    az acr login -n "$ACR" >/dev/null
+    docker buildx build --platform linux/amd64 --label "org.opencontainers.image.revision=$SHA" \
+      -t "$ACR.azurecr.io/ms-users:$SHA" --push "$work"
+    log "pushed $ACR.azurecr.io/ms-users:$SHA" ;;
+
+  app)
+    require_green_sha
+    id=$(uai_id)
+    env_args=(SPRING_PROFILES_ACTIVE=sql-appservice "USERS_SQL_SERVER=$SQL_SERVER.database.windows.net"
+      "USERS_SQL_DATABASE=$SQL_DB" USERS_SQL_PORT=1433 USERS_SQL_POOL_SIZE=3 "USERS_CSRF_ACTIVE_KID=$CSRF_KID"
+      USERS_CSRF_KEYS_JSON=secretref:csrf-keys-json)
+    for f in "${FLAGS[@]}"; do env_args+=("$f=false"); done
+    if az containerapp show -g "$RG" -n "$APP" -o none 2>/dev/null; then
+      az containerapp update -g "$RG" -n "$APP" --image "$ACR.azurecr.io/ms-users:$SHA" \
+        --revision-suffix "r${SHA:0:7}" --replace-env-vars "${env_args[@]}" --tags "sha=$SHA" -o none
+    else
+      az containerapp create -g "$RG" -n "$APP" --environment "$ENV" --workload-profile-name Consumption \
+        --image "$ACR.azurecr.io/ms-users:$SHA" --registry-server "$ACR.azurecr.io" --registry-identity "$id" \
+        --user-assigned "$id" --system-assigned \
+        --secrets "csrf-keys-json=keyvaultref:https://$KV.vault.azure.net/secrets/$CSRF_SECRET,identityref:$id" \
+        --env-vars "${env_args[@]}" --cpu 0.5 --memory 1Gi --min-replicas 0 --max-replicas 1 \
+        --scale-rule-name http --scale-rule-type http --scale-rule-http-concurrency 20 \
+        --ingress external --target-port 8080 --transport auto --revisions-mode single \
+        --revision-suffix "r${SHA:0:7}" --tags "sha=$SHA" service=ms-users env=staging -o none
+    fi
+    # Probes: generous startup window for a cold start that also resumes the serverless database.
+    app_id=$(az containerapp show -g "$RG" -n "$APP" --query id -o tsv)
+    tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+    az rest --method get --url "https://management.azure.com$app_id?api-version=2024-03-01" | python3 -c '
+import json,sys
+d=json.load(sys.stdin); t=d["properties"]["template"]; c=t["containers"][0]
+h=lambda: {"path":"/health","port":8080}
+want=[{"type":"Startup","httpGet":h(),"initialDelaySeconds":10,"periodSeconds":10,"timeoutSeconds":5,"failureThreshold":30},
+      {"type":"Readiness","httpGet":h(),"periodSeconds":15,"timeoutSeconds":5,"failureThreshold":3},
+      {"type":"Liveness","httpGet":h(),"periodSeconds":30,"timeoutSeconds":5,"failureThreshold":3}]
+if c.get("probes")==want: sys.exit(3)
+c["probes"]=want; t["revisionSuffix"]=(t.get("revisionSuffix") or "r")[:20]+"p"
+json.dump({"properties":{"template":t}},sys.stdout)' > "$tmp" && \
+      az rest --method patch --url "https://management.azure.com$app_id?api-version=2024-03-01" --body "@$tmp" -o none || true
+    log "app $(az containerapp show -g "$RG" -n "$APP" --query properties.configuration.ingress.fqdn -o tsv)" ;;
+
+  sql-access)
+    for ip in $(az containerapp show -g "$RG" -n "$APP" --query "properties.outboundIpAddresses[]" -o tsv); do
+      az sql server firewall-rule create -g "$SQL_RG" -s "$SQL_SERVER" -n "ms-users-aca-${ip//./-}" \
+        --start-ip-address "$ip" --end-ip-address "$ip" -o none
+    done
+    pid=$(az containerapp show -g "$RG" -n "$APP" --query identity.principalId -o tsv)
+    client=$(az ad sp show --id "$pid" --query appId -o tsv)
+    sqlcmd -S "$SQL_SERVER.database.windows.net" -d "$SQL_DB" --authentication-method ActiveDirectoryAzCli -l 60 -W -b \
+      -v RUNTIME_PRINCIPAL="$APP" RUNTIME_CLIENT_ID="$client" -i "$ROOT/scripts/azure/sql/grant-runtime-identity.sql"
+    # A revision activated before SQL access existed stays ActivationFailed (a restart does not
+    # recover it), so roll a fresh revision with the same template.
+    az containerapp update -g "$RG" -n "$APP" --revision-suffix "s$(date +%s)" -o none
+    log "new revision $(az containerapp show -g "$RG" -n "$APP" --query properties.latestRevisionName -o tsv)" ;;
+
+  verify)
+    fqdn=$(az containerapp show -g "$RG" -n "$APP" --query properties.configuration.ingress.fqdn -o tsv)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 240 "https://$fqdn/health"); echo "GET /health $code"
+    [[ "$code" == 200 ]] || die "/health is not 200"
+    for p in /v1/auth/attempts /v1/auth/google /v1/auth/refresh /v1/auth/logout /v1/auth/email/requests; do
+      c=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' "https://$fqdn$p")
+      echo "POST $p $c"; [[ "$c" == 404 ]] || die "$p is reachable"
+    done
+    for p in /v1/me/profile /.well-known/jwks.json /actuator/health; do
+      c=$(curl -s -o /dev/null -w '%{http_code}' "https://$fqdn$p"); echo "GET $p $c"; [[ "$c" == 404 ]] || die "$p is reachable"
+    done
+    n=$(az containerapp show -g "$RG" -n "$APP" --query "length(properties.template.containers[0].env[?(ends_with(name,'_ENABLED') || ends_with(name,'_VERIFIED')) && value=='false'])" -o tsv)
+    echo "auth flags false: $n/13"; [[ "$n" == 13 ]] || die "auth flags not all false"
+    az containerapp secret list -g "$RG" -n "$APP" --query "[].{name:name,keyVaultUrl:keyVaultUrl}" -o table ;;
+
+  *) sed -n '2,16p' "$0"; exit 2 ;;
+esac

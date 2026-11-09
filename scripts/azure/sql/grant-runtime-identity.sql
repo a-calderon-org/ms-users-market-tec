@@ -7,6 +7,8 @@
 --
 -- Runtime needs: SELECT/INSERT/UPDATE on dbo tables (no DELETE, no DDL), SELECT on
 -- flyway_schema_history and catalog metadata for SqlSchemaValidator. No role membership.
+-- SqlSchemaValidator reads sys.computed_columns.definition on dbo.external_identities; SELECT
+-- alone leaves that column NULL, so the runtime gets VIEW DEFINITION on that one table only.
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 
@@ -41,12 +43,16 @@ BEGIN
                     AND permission_name IN ('SELECT', 'INSERT', 'UPDATE'))
                 OR (class = 1 AND major_id = OBJECT_ID(N'dbo.flyway_schema_history') AND minor_id = 0 AND state = 'D'
                     AND permission_name IN ('INSERT', 'UPDATE', 'DELETE', 'ALTER'))
+                OR (class = 1 AND major_id = OBJECT_ID(N'dbo.external_identities') AND minor_id = 0 AND state = 'G'
+                    AND permission_name = 'VIEW DEFINITION')
             )
         )
         THROW 50004, 'Existing runtime user has unexpected ownership or permissions.', 1;
 END;
 
 GRANT SELECT, INSERT, UPDATE ON SCHEMA::dbo TO [$(RUNTIME_PRINCIPAL)];
+-- Metadata only (computed-column definitions checked at startup); grants no data access.
+GRANT VIEW DEFINITION ON OBJECT::dbo.external_identities TO [$(RUNTIME_PRINCIPAL)];
 -- Migration history stays readable (Flyway validate) but never writable by the runtime.
 DENY INSERT, UPDATE, DELETE, ALTER ON OBJECT::dbo.flyway_schema_history TO [$(RUNTIME_PRINCIPAL)];
 

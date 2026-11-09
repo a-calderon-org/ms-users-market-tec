@@ -91,7 +91,7 @@ az account get-access-token --subscription "$AZ_SUBSCRIPTION_ID" \
 
 `sql-grant` requiere `sqlcmd` (ODBC, versión 17.8 o posterior en Linux/macOS). Si la variante Go aparece primero en `PATH`, define `SQLCMD_ODBC` con la ruta a la variante ODBC. El token de la suscripción explícita se entrega en un archivo temporal UTF-16LE con permisos 0600 que se elimina al terminar.
 
-**Pendiente:** confirmar en Azure que la visibilidad de metadatos que da `SELECT` basta para las consultas de `sys.indexes` y `sys.foreign_keys` del validador. Si no basta, el arranque falla cerrado y la corrección es `GRANT VIEW DEFINITION ON SCHEMA::dbo`.
+**Verificado en Azure (2026-11-09):** `SELECT` basta para `sys.indexes`, `sys.foreign_keys` y `sys.check_constraints`, pero `sys.computed_columns.definition` queda en `NULL` y el validador falla con `BeanCreationException`. El script concede ahora `VIEW DEFINITION` solo sobre `dbo.external_identities` (no sobre todo el esquema).
 
 **Red.** F1 no admite integración VNet ni endpoint privado. La conectividad requiere una regla de firewall /32 por cada IP de `outboundIpAddresses` de la app en el plan actual (paso `sql-firewall`). Riesgos aceptados para staging:
 
