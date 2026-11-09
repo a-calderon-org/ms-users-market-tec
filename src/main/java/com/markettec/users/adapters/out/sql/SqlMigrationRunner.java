@@ -29,6 +29,10 @@ public final class SqlMigrationRunner {
     private SqlMigrationRunner() { }
 
     public static void main(String[] args) {
+        // Flyway and the driver may log hosts or URLs. Silence them only in this operator process;
+        // the setting is never applied to the Spring runtime or to shared Flyway configuration.
+        ((ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME))
+                .setLevel(ch.qos.logback.classic.Level.OFF);
         int status;
         try {
             Plan plan = plan(args, System.getenv());
@@ -101,7 +105,6 @@ public final class SqlMigrationRunner {
         return Flyway.configure()
                 .locations("classpath:db/migration")
                 .defaultSchema("dbo")
-                .loggers("noop")
                 .schemas("dbo")
                 .createSchemas(false)
                 .cleanDisabled(true)
