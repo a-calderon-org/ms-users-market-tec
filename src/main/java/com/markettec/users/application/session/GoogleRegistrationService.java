@@ -66,8 +66,10 @@ public final class GoogleRegistrationService {
         return tx.execute(() -> {
             var intent = intent(id, browser);
             var proof = verifier.verify(token, new GoogleVerificationContext(audience, intent.nonce()));
+            // Google sign-up trusts Google's authentication: any Google account with a verified email may
+            // register. The institutional-domain rule applies to Magic Link (manual login) only.
             if (!intent.validAt(now()) || proof == null || !audience.equals(proof.audience())
-                    || !InstitutionalEmailProof.eligible(proof.verifiedEmail()))
+                    || proof.verifiedEmail() == null)
                 throw new SessionRejectedException();
             var key = new ExternalIdentityKey(proof.issuer(), proof.subject());
             if (identities.findByKey(key).isPresent()

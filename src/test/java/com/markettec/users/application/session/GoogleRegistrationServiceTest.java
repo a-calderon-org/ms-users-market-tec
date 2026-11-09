@@ -82,21 +82,15 @@ class GoogleRegistrationServiceTest {
                 assertThrows(SessionRejectedException.class, () -> complete(service, c)).reason());
     }
 
-    @Test void onlyExactInstitutionalDomainsAreEligible() {
+    @Test void anyVerifiedGoogleEmailCanRegisterNotOnlyInstitutionalDomains() {
         for (String address : List.of("a@estudiantec.cr", "a@itcr.ac.cr", "a@tec.ac.cr",
-                "a@x.tec.ac.cr", "a@tec.ac.cr.evil", "a@example.com")) {
+                "a@gmail.com", "a@example.com")) {
             email = new Email(address);
             subject = address;
             var service = service();
             var c = service.begin();
-            boolean eligible = Set.of("a@estudiantec.cr", "a@itcr.ac.cr", "a@tec.ac.cr").contains(address);
-            if (eligible) {
-                assertNotNull(complete(service, c));
-                assertTrue(intents.get(c.attemptId()).consumed());
-            } else {
-                assertThrows(SessionRejectedException.class, () -> complete(service, c));
-                assertFalse(intents.get(c.attemptId()).consumed());
-            }
+            assertNotNull(complete(service, c));
+            assertTrue(intents.get(c.attemptId()).consumed());
         }
     }
 
