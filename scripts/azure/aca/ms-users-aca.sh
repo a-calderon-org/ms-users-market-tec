@@ -27,7 +27,8 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 FLAGS=(USERS_INTERNAL_JWT_ENABLED USERS_API_HTTP_ENABLED USERS_AUTH_METHOD_LINKING_ENABLED USERS_EMAIL_ENABLED
   USERS_SESSION_LOGOUT_ENABLED USERS_SESSION_REFRESH_ENABLED USERS_SESSION_HTTP_ENABLED
   USERS_SESSION_HTTP_HTTPS_TOPOLOGY_VERIFIED USERS_GOOGLE_VERIFIER_ENABLED USERS_GOOGLE_LOGIN_ENABLED
-  USERS_GOOGLE_REGISTRATION_ENABLED USERS_GOOGLE_HTTP_ENABLED USERS_GOOGLE_HTTP_SAME_SITE_VERIFIED)
+  USERS_GOOGLE_REGISTRATION_ENABLED USERS_GOOGLE_HTTP_ENABLED USERS_GOOGLE_HTTP_SAME_SITE_VERIFIED
+  USERS_GATEWAY_USER_TOKEN_RELOCATION_ENABLED)
 
 die() { echo "error: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
@@ -153,7 +154,7 @@ json.dump({"properties":{"template":t}},sys.stdout)' > "$tmp" && \
       c=$(curl -s -o /dev/null -w '%{http_code}' "https://$fqdn$p"); echo "GET $p $c"; [[ "$c" == 404 ]] || die "$p is reachable"
     done
     n=$(az containerapp show -g "$RG" -n "$APP" --query "length(properties.template.containers[0].env[?(ends_with(name,'_ENABLED') || ends_with(name,'_VERIFIED')) && value=='false'])" -o tsv)
-    echo "auth flags false: $n/13"; [[ "$n" == 13 ]] || die "auth flags not all false"
+    echo "auth flags false: $n/${#FLAGS[@]}"; [[ "$n" == "${#FLAGS[@]}" ]] || die "auth flags not all false"
     az containerapp secret list -g "$RG" -n "$APP" --query "[].{name:name,keyVaultUrl:keyVaultUrl}" -o table ;;
 
   *) sed -n '2,16p' "$0"; exit 2 ;;
