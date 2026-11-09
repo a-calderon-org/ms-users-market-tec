@@ -45,10 +45,20 @@ def run_script(config, *args, tools_dir=None):
                           capture_output=True, text=True, env=environment, timeout=60)
 
 
+ACA_SCRIPT = (AZURE / "aca/ms-users-aca.sh").read_text()
+
+
 class AzureStagingConfigTest(unittest.TestCase):
+    def test_container_apps_script_sets_every_flag_false(self):
+        flags = set(re.findall(r"\$\{(USERS_[A-Z_]+):false\}", APPLICATION_YML))
+        declared = re.search(r"^FLAGS=\(([^)]*)\)", ACA_SCRIPT, re.M)
+        self.assertIsNotNone(declared)
+        self.assertEqual(flags, set(declared.group(1).split()))
+        self.assertIn('[[ "$n" == "${#FLAGS[@]}" ]]', ACA_SCRIPT)
+
     def test_every_default_false_flag_is_explicitly_false(self):
         flags = set(re.findall(r"\$\{(USERS_[A-Z_]+):false\}", APPLICATION_YML))
-        self.assertEqual(13, len(flags), flags)
+        self.assertEqual(14, len(flags), flags)
         for flag in flags:
             self.assertEqual("false", TEMPLATE.get(flag), flag)
         self.assertEqual(flags, {name for name, value in TEMPLATE.items() if value == "false"})
@@ -60,7 +70,8 @@ class AzureStagingConfigTest(unittest.TestCase):
                        "USERS_INTERNAL_JWT_ISSUER", "USERS_INTERNAL_JWT_AUDIENCE"):
             self.assertNotIn(absent, TEMPLATE)
         for name, value in TEMPLATE.items():
-            if re.search(r"KEYS?_JSON|SECRET|PASSWORD|API_KEY|TOKEN", name):
+            boolean_flag = re.fullmatch(r"USERS_[A-Z_]+_(ENABLED|VERIFIED)", name) and value == "false"
+            if re.search(r"KEYS?_JSON|SECRET|PASSWORD|API_KEY|TOKEN", name) and not boolean_flag:
                 self.assertTrue(value.startswith("@Microsoft.KeyVault("), name)
             self.assertNotRegex(value, r"[A-Za-z0-9+/]{40,}={0,2}", name)
         for name in ("JAVA_OPTS", "USERS_CSRF_ACTIVE_KID"):
