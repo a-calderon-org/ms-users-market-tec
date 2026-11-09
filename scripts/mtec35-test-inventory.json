@@ -1,5 +1,5 @@
 {
-  "normal_count": 433,
+  "normal_count": 437,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -388,6 +388,12 @@
       "runtimeShapeWithMinimumIdleZeroDropsTheFailFastConnection",
       "startupValidationRunsOverTheSingleRecoveredConnectionThenTheRuntimeShapeReturns",
       "startupCompleteIgnoresOtherAndClosedDataSources"
+    ],
+    "com.markettec.users.adapters.in.web.PublicAuthRateLimitFilterTest": [
+      "admitsUpToTheLimitThenAnswers429WithoutReachingTheController",
+      "windowResetsAfterOneMinute",
+      "routesHaveIndependentBudgetsAndOtherRequestsAreNeverCounted",
+      "defaultLimitsCoverEveryAnonymousAuthRoute"
     ]
   }
 }
