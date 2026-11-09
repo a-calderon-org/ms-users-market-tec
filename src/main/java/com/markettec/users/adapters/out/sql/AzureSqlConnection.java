@@ -19,11 +19,22 @@ public final class AzureSqlConnection {
 
     private static SQLServerDataSource dataSource(String server, String database, int port, String authentication)
             throws SQLException {
+        SQLServerDataSource source = connectionProperties(server, database, port);
+        source.setAuthentication(authentication);
+        return source;
+    }
+
+    static SQLServerDataSource operatorDataSource(String server, String database, int port, String token) {
+        SQLServerDataSource source = connectionProperties(server, database, port);
+        source.setAccessToken(token);
+        return source;
+    }
+
+    private static SQLServerDataSource connectionProperties(String server, String database, int port) {
         SQLServerDataSource source = new SQLServerDataSource();
         source.setServerName(server);
         source.setDatabaseName(database);
         source.setPortNumber(port);
-        source.setAuthentication(authentication);
         source.setEncrypt("true");
         source.setTrustServerCertificate(false);
         source.setHostNameInCertificate("*.database.windows.net");

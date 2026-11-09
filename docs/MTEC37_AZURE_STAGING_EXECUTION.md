@@ -64,30 +64,36 @@ Con flags apagados, el puerto principal expone solo `/health` (200, sin SQL) y e
 
 **Runtime (código existente, sin cambios).** El perfil `sql-appservice` usa exclusivamente `ActiveDirectoryManagedIdentity` (identidad asignada por el sistema), `encrypt=true`, `trustServerCertificate=false` y `hostNameInCertificate=*.database.windows.net`. No admite contraseña, usuario SQL ni URL JDBC concatenada, y no ejecuta migraciones. En el arranque, `SqlSchemaValidator` comprueba el nombre de la base, el historial Flyway (`validate`), las claves primarias, los índices y las FK. **Si la aplicación arranca, la conectividad y el esquema se validaron en ese momento.**
 
-**Migraciones (nuevo, código).** `SqlMigrationRunner` es un punto de entrada para el operador, fuera de Spring y nunca invocado por el runtime. Se ejecuta desde el mismo JAR:
+**Migraciones (nuevo, código).** `SqlMigrationRunner` es un punto de entrada del operador, separado de Spring. El script de staging lo ejecuta desde el JAR verificado. Para invocarlo directamente:
 
 ```bash
-java -Dloader.main=com.markettec.users.adapters.out.sql.SqlMigrationRunner \
-  -cp ms-users-<sha>.jar org.springframework.boot.loader.launch.PropertiesLauncher info
+set -o pipefail
+az account get-access-token --subscription "$AZ_SUBSCRIPTION_ID" \
+  --resource https://database.windows.net/ --query accessToken -o tsv |
+  java -Dloader.main=com.markettec.users.adapters.out.sql.SqlMigrationRunner \
+    -cp "$JAR" org.springframework.boot.loader.launch.PropertiesLauncher info
 ```
 
-- Se autentica con `ActiveDirectoryDefault`, es decir, con la sesión `az login` del operador (administrador Entra), y **nunca** con la identidad runtime.
+- Usa el token SQL obtenido con la sesión `az login` del operador (administrador Entra) para la suscripción explícita. El token entra por stdin y queda fuera de argumentos y logs.
 - Solo admite `info` (lectura) y `migrate --confirm-database=<USERS_SQL_DATABASE>`. Rechaza `clean`, `repair`, `baseline` y cualquier argumento desconocido. Exige un host `*.database.windows.net` y comprueba `DB_NAME()` antes de actuar.
+- V13 elimina los intentos de Magic Link heredados que carecen de vínculo con el navegador. Si V13 está pendiente, incluso en una base nueva, `migrate` exige además `--confirm-email-attempt-invalidation`.
 - Usa Flyway con `cleanDisabled`, sin baseline, sin migraciones fuera de orden y sin crear esquemas, sobre las mismas migraciones `V1…V13` que valida el runtime.
 - Solo imprime el nombre de la base, las versiones y su estado; ante un error, solo el tipo de excepción.
 
 **Permisos runtime.** [`scripts/azure/sql/grant-runtime-identity.sql`](../scripts/azure/sql/grant-runtime-identity.sql) hace lo siguiente:
 
-- Crea `[<webapp>] FROM EXTERNAL PROVIDER`.
+- Crea el usuario externo `[<webapp>]` con el SID derivado del client ID de su identidad administrada. Si el nombre existe, comprueba su SID, roles, propiedad de esquemas u objetos y permisos directos antes de conceder acceso.
 - Concede `SELECT, INSERT, UPDATE ON SCHEMA::dbo`. El código no ejecuta `DELETE` ni DDL; se comprobó con `grep` sobre `src/main/java`.
 - Deniega `INSERT, UPDATE, DELETE, ALTER` sobre `dbo.flyway_schema_history`.
 - No asigna ningún rol (`db_owner`, `db_datawriter`, etc.).
 - Aborta si todavía no existe el historial de migraciones.
 - Imprime los roles y permisos resultantes como evidencia.
 
+`sql-grant` requiere `sqlcmd` (ODBC, versión 17.8 o posterior en Linux/macOS). Si la variante Go aparece primero en `PATH`, define `SQLCMD_ODBC` con la ruta a la variante ODBC. El token de la suscripción explícita se entrega en un archivo temporal UTF-16LE con permisos 0600 que se elimina al terminar.
+
 **Pendiente:** confirmar en Azure que la visibilidad de metadatos que da `SELECT` basta para las consultas de `sys.indexes` y `sys.foreign_keys` del validador. Si no basta, el arranque falla cerrado y la corrección es `GRANT VIEW DEFINITION ON SCHEMA::dbo`.
 
-**Red.** F1 no admite integración VNet ni endpoint privado. La conectividad requiere una regla de firewall /32 por cada IP de `possibleOutboundIpAddresses` de la app (paso `sql-firewall`). Riesgos aceptados para staging:
+**Red.** F1 no admite integración VNet ni endpoint privado. La conectividad requiere una regla de firewall /32 por cada IP de `outboundIpAddresses` de la app en el plan actual (paso `sql-firewall`). Riesgos aceptados para staging:
 
 - Esas IP son compartidas con otros clientes del mismo stamp de App Service. La autenticación sigue siendo exclusivamente Entra.
 - La lista de IP puede cambiar si se cambia de plan.
@@ -108,7 +114,7 @@ java -Dloader.main=com.markettec.users.adapters.out.sql.SqlMigrationRunner \
 - El Key Vault usa RBAC. El operador recibe `Key Vault Secrets Officer` sobre el vault (su rol `Owner` no da acceso al plano de datos con RBAC).
 - La identidad de la app recibe `Key Vault Secrets User` **solo sobre el secreto CSRF**.
 - La clave se genera en el momento con `openssl rand -base64 32` (32 bytes, dentro del rango 32–64 de `CsrfKeys`). Se escribe en un archivo temporal con permisos 0600, se sube con `-o none` y se borra. **Nunca se imprime ni se guarda en el repositorio.**
-- Si la referencia no se resuelve, App Service entrega el literal `@Microsoft.KeyVault(...)` y el arranque falla cerrado (§9, caso C). El paso `verify` muestra el estado de resolución sin mostrar valores.
+- Si la referencia no se resuelve, App Service entrega el literal `@Microsoft.KeyVault(...)` y el arranque falla cerrado (§9, caso C). El paso `verify` exige el estado `Resolved`.
 
 ## 6. Variables de entorno (sin secretos)
 
@@ -134,14 +140,14 @@ Fuente declarativa: [`scripts/azure/appsettings.staging.json`](../scripts/azure/
 
 ## 7. Migraciones y requisitos previos
 
-1. CI `ms-users CI` en verde para el SHA que se va a desplegar, con los casos normales y los 65 SQL Server nativos. El paso `package` lo comprueba con `gh run list`.
+1. CI `ms-users CI` en verde para el SHA que se va a desplegar, con los casos normales y los 65 SQL Server nativos. `package`, `deploy` y `rollback` lo comprueban con `gh run list`.
 2. Conocer el estado real de la base: ejecutar `migrate-info` (solo lectura; reanuda la base). Ante cualquiera de estas situaciones, detenerse:
    - tablas sin historial (Flyway rechaza un esquema no vacío sin baseline);
    - checksums distintos;
    - versiones desconocidas.
-3. Con autorización, ejecutar `migrate --execute`. Después, `info` debe mostrar `pending=0` y `current_version=13`.
+3. Con autorización, ejecutar `migrate --execute --confirm-database=sqldb-ms-users-dev`. Si V13 está pendiente, revisar la invalidación de intentos heredados y autorizarla con `--confirm-email-attempt-invalidation`. Después, `info` debe mostrar `pending=0` y `current_version=13`.
 4. Ejecutar `sql-grant --execute` **después** de la migración. El script SQL exige que exista el historial.
-5. No hay rollback de esquema mediante `DROP`. Un defecto se corrige con una migración aditiva revisada.
+5. Un defecto de esquema se corrige con una migración aditiva revisada o una restauración planificada.
 
 La IP del operador debe estar en el firewall SQL. Existe una regla del 2026-10-31; si la IP cambió, añadir la regla es una operación que requiere autorización (§12).
 
@@ -152,7 +158,7 @@ Todo pasa por [`scripts/azure/ms-users-staging.sh`](../scripts/azure/ms-users-st
 - Los pasos que modifican Azure son **simulacros** salvo que se pase `--execute`.
 - `check`, `render-settings`, `migrate-info` y `verify` solo leen.
 
-La configuración se toma de una copia de [`ms-users-staging.env.example`](../scripts/azure/ms-users-staging.env.example), que no contiene secretos. Los nombres de la web app y del Key Vault y el `kid` CSRF quedan a elección del operador; este documento no los inventa.
+La configuración se toma de una copia de [`ms-users-staging.env.example`](../scripts/azure/ms-users-staging.env.example), con asignaciones literales y sin secretos. Los nombres de la web app y del Key Vault y el `kid` CSRF quedan a elección del operador.
 
 ```bash
 CFG=scripts/azure/.env    # ignorado por .gitignore
@@ -165,14 +171,14 @@ $S --config $CFG grant-keyvault --execute
 $S --config $CFG sql-firewall --execute
 git checkout --detach <sha> && $S --config $CFG package --sha <sha>   # checkout limpio
 $S --config $CFG migrate-info --sha <sha>
-$S --config $CFG migrate --sha <sha> --execute
+$S --config $CFG migrate --sha <sha> --execute --confirm-database=sqldb-ms-users-dev --confirm-email-attempt-invalidation
 $S --config $CFG sql-grant --execute
 $S --config $CFG configure --execute
 $S --config $CFG deploy --sha <sha> --execute
 $S --config $CFG verify
 ```
 
-El artefacto se guarda fuera del repositorio (`ARTIFACT_DIR`), con nombre `ms-users-<sha>.jar` y su `.sha256`. `deploy` verifica el hash y etiqueta la app con `deployedSha` y `previousSha`.
+El artefacto se guarda fuera del repositorio (`ARTIFACT_DIR`), con nombre `ms-users-<sha>.jar` y su `.sha256`. Migración, despliegue y rollback verifican el hash del JAR seleccionado. `deploy` etiqueta la app con `deployedSha` y `previousSha`.
 
 **No se añadió un workflow de despliegue.** El CI existente valida el SHA, y un despliegue desde GitHub requeriría crear una identidad federada y un rol sobre la app, operaciones que no están autorizadas. Cuando se autoricen, el siguiente paso natural es un workflow `workflow_dispatch` con `environment` protegido que reutilice este script.
 
@@ -199,7 +205,7 @@ Ampliar el formatter de logs queda fuera de este incremento.
 **En Azure, tras el despliegue (Pendiente):** `verify`
 
 - Comprueba los app settings: los flags están en `false`, el perfil es `sql-appservice` y `USERS_CSRF_KEYS_JSON` es una referencia de Key Vault. Los valores no se imprimen.
-- Comprueba el estado de resolución de la referencia de Key Vault.
+- Exige que el estado de resolución de la referencia de Key Vault sea `Resolved`.
 - Ejecuta [`verify_http.py`](../scripts/azure/verify_http.py):
   - `/health` responde 200, con reintentos para el arranque en frío de F1.
   - Las 18 rutas de autenticación, perfil y JWKS del código, más `/actuator/*`, `/readyz` y `/livez`, responden 404 sin `Set-Cookie` ni CORS aunque se envíe `Origin`.
@@ -213,7 +219,7 @@ Que `/health` responda 200 con el perfil `sql-appservice` demuestra a la vez:
 - que SQL era accesible;
 - que el esquema estaba migrado y validado en el arranque.
 
-Opcionalmente, desde `az webapp ssh`: `curl -s 127.0.0.1:9091/actuator/health/readiness` (loopback; no se publica). Logs de arranque: `az webapp log tail`.
+Opcionalmente, desde `az webapp ssh --subscription "$AZ_SUBSCRIPTION_ID"`, consultar `curl -s 127.0.0.1:9091/actuator/health/readiness` en loopback. Para los logs de arranque, usar `az webapp log tail --subscription "$AZ_SUBSCRIPTION_ID"`. Indicar el grupo y nombre de la app en ambos comandos.
 
 ## 10. Rollback
 
@@ -255,7 +261,7 @@ Todas en la suscripción `26db4383-add6-4e47-9ca1-3b208853ac17`, región `canada
 | 6 | `sql-firewall` | `az sql server firewall-rule create -s sql-markettec-dev -n ms-users-stg-outbound-<i>`, una regla /32 por cada IP saliente |
 | 7 | — | Si la IP del operador cambió: regla de firewall SQL para esa IP |
 | 8 | `migrate` | Flyway `migrate` contra `sqldb-ms-users-dev` (reanuda la base; DDL V1–V13 pendientes) |
-| 9 | `sql-grant` | `CREATE USER [<webapp>] FROM EXTERNAL PROVIDER` + `GRANT`/`DENY` del script SQL |
+| 9 | `sql-grant` | Crear el usuario de la identidad administrada y aplicar los `GRANT` y `DENY` del script SQL |
 | 10 | `configure` | `az webapp config set` (runtime, comando de inicio, FTPS deshabilitado, TLS 1.2, Always On desactivado), `az webapp log config`, `az webapp config appsettings set` |
 | 11 | `deploy` | `az webapp deploy --type jar` + etiquetas `deployedSha`/`previousSha` |
 | 12 | `start`/`stop`/`rollback` | Según sea necesario |

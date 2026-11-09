@@ -1955,7 +1955,14 @@ class SqlUserStoreIT {
                 """, "a".repeat(32), "ana@tec.ac.cr", "b".repeat(64), now, now + 600_000);
         Flyway latest = Flyway.configure().dataSource(upgrade).defaultSchema("dbo")
                 .baselineOnMigrate(false).cleanDisabled(true).load();
-        assertEquals(1, latest.migrate().migrationsExecuted);
+        String host = "example.database.windows.net";
+        var unconfirmed = new SqlMigrationRunner.Plan(SqlMigrationRunner.Command.MIGRATE, host, database, 1433, false);
+        var refusal = assertThrows(IllegalArgumentException.class,
+                () -> SqlMigrationRunner.run(unconfirmed, upgrade, System.out));
+        assertTrue(refusal.getMessage().contains("V13"));
+        assertEquals(1, upgradeJdbc.queryForObject("SELECT COUNT(*) FROM dbo.email_login_attempts", Integer.class));
+        var confirmed = new SqlMigrationRunner.Plan(SqlMigrationRunner.Command.MIGRATE, host, database, 1433, true);
+        assertEquals(0, SqlMigrationRunner.run(confirmed, upgrade, System.out));
         latest.validate();
         assertEquals(checksum, upgradeJdbc.queryForObject(
                 "SELECT checksum FROM dbo.flyway_schema_history WHERE [version]='12'", Integer.class));

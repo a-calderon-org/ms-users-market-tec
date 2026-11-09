@@ -1,4 +1,5 @@
 """MTEC-37: the Azure staging configuration keeps every flag off and carries no secrets."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -35,8 +36,11 @@ def sample_config(directory):
     return config
 
 
-def run_script(config, *args):
-    environment = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp")}
+def run_script(config, *args, tools_dir=None):
+    path = os.environ.get("PATH", "")
+    if tools_dir is not None:
+        path = f"{tools_dir}{os.pathsep}{path}"
+    environment = {"PATH": path, "HOME": os.environ.get("HOME", "/tmp")}
     return subprocess.run(["bash", str(SCRIPT), "--config", str(config), *args],
                           capture_output=True, text=True, env=environment, timeout=60)
 
@@ -102,6 +106,52 @@ class AzureStagingConfigTest(unittest.TestCase):
             empty = Path(directory) / "empty.env"
             empty.write_text("")
             self.assertNotEqual(0, run_script(empty, "check").returncode)
+
+    def test_config_cannot_run_commands_or_enable_execute(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = sample_config(directory)
+            marker = Path(directory) / "ran"
+            with config.open("a") as stream:
+                stream.write(f'JAVA_OPTS="$(touch {marker})"\nEXECUTE=true\n')
+            az = Path(directory) / "az"
+            az.write_text("#!/bin/sh\nexit 97\n")
+            az.chmod(0o700)
+            result = run_script(config, "stop", tools_dir=directory)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("unsupported configuration key", result.stderr)
+            self.assertFalse(marker.exists())
+
+    def test_migrate_requires_explicit_database_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = sample_config(directory)
+            for args in ((), ("--confirm-database=another-db",)):
+                result = run_script(config, "migrate", "--execute", *args)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("matching SQL_DATABASE_NAME", result.stderr)
+
+    def test_deploy_and_rollback_require_matching_artifact_and_green_ci(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = sample_config(directory)
+            tools_dir = Path(directory) / "bin"
+            tools_dir.mkdir()
+            for name, body in {"gh": "echo 0", "az": "echo 'unexpected Azure call'; exit 97"}.items():
+                stub = tools_dir / name
+                stub.write_text(f"#!/bin/sh\n{body}\n")
+                stub.chmod(0o700)
+            sha = "a" * 40
+            artifacts = Path(directory) / "artifacts"
+            artifacts.mkdir()
+            jar = artifacts / f"ms-users-{sha}.jar"
+            jar.write_bytes(b"dummy jar")
+            sidecar = jar.with_suffix(".jar.sha256")
+            digest = hashlib.sha256(jar.read_bytes()).hexdigest()
+            for step in ("deploy", "rollback"):
+                for filename, error in (("different.jar", "checksum mismatch"), (jar.name, "no successful")):
+                    sidecar.write_text(f"{digest}  {filename}\n")
+                    result = run_script(config, step, "--execute", "--sha", sha, tools_dir=tools_dir)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(error, result.stderr)
+                    self.assertNotIn("unexpected Azure call", result.stdout)
 
 
 if __name__ == "__main__":

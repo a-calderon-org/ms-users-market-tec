@@ -8,14 +8,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 /**
  * Operator-only Flyway entrypoint for Azure SQL. It is never started by Spring and the App Service
  * runtime never migrates: the runtime identity only validates the schema (see {@link SqlSchemaValidator}).
  *
- * <p>Authentication uses the operator's Entra identity ({@code ActiveDirectoryDefault}, e.g. an
- * {@code az login} session), never the runtime Managed Identity, a SQL password or a JDBC URL.
+ * <p>Authentication uses an operator's Entra access token supplied through standard input.
  * {@code info} is read-only; {@code migrate} requires {@code --confirm-database=<USERS_SQL_DATABASE>}.
  * Output is limited to the database name and migration versions/states.</p>
  */
@@ -24,7 +24,7 @@ public final class SqlMigrationRunner {
 
     enum Command { INFO, MIGRATE }
 
-    record Plan(Command command, String server, String database, int port) { }
+    record Plan(Command command, String server, String database, int port, boolean confirmEmailInvalidation) { }
 
     private SqlMigrationRunner() { }
 
@@ -32,7 +32,12 @@ public final class SqlMigrationRunner {
         int status;
         try {
             Plan plan = plan(args, System.getenv());
-            status = run(plan, AzureSqlConnection.dataSource(plan.server(), plan.database(), plan.port()), System.out);
+            String token = new String(System.in.readNBytes(32769), StandardCharsets.UTF_8).strip();
+            if (token.isBlank() || token.length() > 32768) {
+                throw new IllegalArgumentException("a SQL access token on standard input is required");
+            }
+            status = run(plan, AzureSqlConnection.operatorDataSource(plan.server(), plan.database(), plan.port(), token),
+                    System.out);
         } catch (IllegalArgumentException refused) {
             System.err.println("Refused: " + refused.getMessage());
             status = 2;
@@ -54,9 +59,14 @@ public final class SqlMigrationRunner {
             default -> throw new IllegalArgumentException("unknown command");
         };
         String confirmation = null;
+        boolean confirmEmailInvalidation = false;
         for (int i = 1; i < args.length; i++) {
-            if (args[i].startsWith("--confirm-database=") && confirmation == null) {
+            if (command == Command.INFO) {
+                throw new IllegalArgumentException("info accepts no arguments");
+            } else if (args[i].startsWith("--confirm-database=") && confirmation == null) {
                 confirmation = args[i].substring("--confirm-database=".length());
+            } else if (args[i].equals("--confirm-email-attempt-invalidation") && !confirmEmailInvalidation) {
+                confirmEmailInvalidation = true;
             } else {
                 throw new IllegalArgumentException("unknown or repeated argument");
             }
@@ -75,7 +85,7 @@ public final class SqlMigrationRunner {
         if (command == Command.MIGRATE && !database.equals(confirmation)) {
             throw new IllegalArgumentException("migrate requires --confirm-database matching USERS_SQL_DATABASE");
         }
-        return new Plan(command, server, database, port);
+        return new Plan(command, server, database, port, confirmEmailInvalidation);
     }
 
     private static String required(Map<String, String> environment, String name) {
@@ -91,6 +101,7 @@ public final class SqlMigrationRunner {
         return Flyway.configure()
                 .locations("classpath:db/migration")
                 .defaultSchema("dbo")
+                .loggers("noop")
                 .schemas("dbo")
                 .createSchemas(false)
                 .cleanDisabled(true)
@@ -108,17 +119,26 @@ public final class SqlMigrationRunner {
         Flyway flyway = configuration().dataSource(source).load();
         out.println("database=" + actual);
         if (plan.command() == Command.MIGRATE) {
+            if (!plan.confirmEmailInvalidation()) {
+                for (MigrationInfo migration : flyway.info().pending()) {
+                    if ("13".equals(migration.getVersion().getVersion())) {
+                        throw new IllegalArgumentException("V13 invalidates legacy email attempts; "
+                                + "review and supply --confirm-email-attempt-invalidation");
+                    }
+                }
+            }
             var result = flyway.migrate();
             out.println("migrations_executed=" + result.migrationsExecuted);
         }
         int pending = 0;
-        for (MigrationInfo migration : flyway.info().all()) {
+        var info = flyway.info();
+        for (MigrationInfo migration : info.all()) {
             out.println("migration version=" + migration.getVersion() + " state=" + migration.getState());
             if (migration.getState() == MigrationState.PENDING) {
                 pending++;
             }
         }
-        var current = flyway.info().current();
+        var current = info.current();
         out.println("current_version=" + (current == null ? "none" : current.getVersion()));
         out.println("pending=" + pending);
         return 0;

@@ -1,10 +1,9 @@
 -- ms-users runtime identity: least privilege on Azure SQL.
 -- Run AFTER migrations, connected to the ms-users database as the Entra administrator
--- (operator), never as the runtime identity. sqlcmd variable RUNTIME_PRINCIPAL is the
--- App Service name (its system-assigned managed identity has the same display name).
+-- (operator), never as the runtime identity. The staging script supplies the App
+-- Service name and the client ID of its system-assigned identity.
 --
---   sqlcmd -S <server>.database.windows.net -d <database> --authentication-method ActiveDirectoryDefault \
---          -v RUNTIME_PRINCIPAL=<webapp-name> -i scripts/azure/sql/grant-runtime-identity.sql
+--   ms-users-staging.sh --config <file> sql-grant --execute
 --
 -- Runtime needs: SELECT/INSERT/UPDATE on dbo tables (no DELETE, no DDL), SELECT on
 -- flyway_schema_history and catalog metadata for SqlSchemaValidator. No role membership.
@@ -16,8 +15,36 @@ IF OBJECT_ID(N'dbo.flyway_schema_history', N'U') IS NULL
 
 BEGIN TRANSACTION;
 
-IF DATABASE_PRINCIPAL_ID(N'$(RUNTIME_PRINCIPAL)') IS NULL
-    CREATE USER [$(RUNTIME_PRINCIPAL)] FROM EXTERNAL PROVIDER;
+DECLARE @client_id uniqueidentifier = CONVERT(uniqueidentifier, N'$(RUNTIME_CLIENT_ID)');
+DECLARE @sid binary(16) = CONVERT(binary(16), @client_id);
+DECLARE @principal_id int = DATABASE_PRINCIPAL_ID(N'$(RUNTIME_PRINCIPAL)');
+
+IF @principal_id IS NULL
+BEGIN
+    DECLARE @create_user nvarchar(400) = N'CREATE USER ' + QUOTENAME(N'$(RUNTIME_PRINCIPAL)')
+        + N' WITH SID = ' + CONVERT(nvarchar(34), @sid, 1) + N', TYPE = E;';
+    EXEC sys.sp_executesql @create_user;
+END
+ELSE
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE principal_id = @principal_id AND type = 'E' AND sid = @sid)
+        THROW 50002, 'Existing runtime user has a different identity.', 1;
+    IF EXISTS (SELECT 1 FROM sys.database_role_members WHERE member_principal_id = @principal_id)
+        THROW 50003, 'Existing runtime user belongs to a database role.', 1;
+    IF EXISTS (SELECT 1 FROM sys.schemas WHERE principal_id = @principal_id)
+        OR EXISTS (SELECT 1 FROM sys.objects WHERE principal_id = @principal_id)
+        OR EXISTS (
+            SELECT 1 FROM sys.database_permissions
+            WHERE grantee_principal_id = @principal_id AND NOT (
+                (class = 0 AND permission_name = 'CONNECT' AND state = 'G')
+                OR (class = 3 AND major_id = SCHEMA_ID(N'dbo') AND state = 'G'
+                    AND permission_name IN ('SELECT', 'INSERT', 'UPDATE'))
+                OR (class = 1 AND major_id = OBJECT_ID(N'dbo.flyway_schema_history') AND minor_id = 0 AND state = 'D'
+                    AND permission_name IN ('INSERT', 'UPDATE', 'DELETE', 'ALTER'))
+            )
+        )
+        THROW 50004, 'Existing runtime user has unexpected ownership or permissions.', 1;
+END;
 
 GRANT SELECT, INSERT, UPDATE ON SCHEMA::dbo TO [$(RUNTIME_PRINCIPAL)];
 -- Migration history stays readable (Flyway validate) but never writable by the runtime.

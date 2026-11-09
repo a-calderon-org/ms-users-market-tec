@@ -22,8 +22,11 @@ class SqlMigrationRunnerTest {
         assertThrows(IllegalArgumentException.class, () -> SqlMigrationRunner.plan(new String[] {"migrate"}, AZURE));
         assertThrows(IllegalArgumentException.class,
                 () -> SqlMigrationRunner.plan(new String[] {"migrate", "--confirm-database=other"}, AZURE));
-        assertEquals(SqlMigrationRunner.Command.MIGRATE,
-                SqlMigrationRunner.plan(new String[] {"migrate", "--confirm-database=isolated"}, AZURE).command());
+        var plan = SqlMigrationRunner.plan(new String[] {"migrate", "--confirm-database=isolated"}, AZURE);
+        assertEquals(SqlMigrationRunner.Command.MIGRATE, plan.command());
+        assertFalse(plan.confirmEmailInvalidation());
+        assertTrue(SqlMigrationRunner.plan(new String[] {"migrate", "--confirm-database=isolated",
+                "--confirm-email-attempt-invalidation"}, AZURE).confirmEmailInvalidation());
     }
 
     @Test
