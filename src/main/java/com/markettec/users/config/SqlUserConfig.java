@@ -3,6 +3,7 @@ package com.markettec.users.config;
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.sql.AzureSqlConnection;
 import com.markettec.users.adapters.out.sql.SqlSchemaValidator;
+import com.markettec.users.adapters.out.sql.SqlStartupRetry;
 import com.markettec.users.adapters.out.sql.SqlUserStore;
 import com.markettec.users.adapters.out.sql.SqlSessionRepository;
 import com.markettec.users.adapters.out.sql.SqlRecentAttemptRepository;
@@ -58,7 +59,10 @@ public class SqlUserConfig {
         config.setMaxLifetime(600000);
         config.setKeepaliveTime(0);
         config.setConnectionTimeout(35000);
-        return new HikariDataSource(config);
+        // MTEC-37: Hikari still fails fast (one connection attempt per pool construction). A transient failure of
+        // that first connection — a serverless database resuming from auto-pause — is retried here, bounded, instead
+        // of exiting the JVM and waiting for a container restart. Nothing serves HTTP until this bean completes.
+        return SqlStartupRetry.run(SqlStartupRetry.Policy.AZURE_SQL_RESUME, () -> new HikariDataSource(config));
     }
 
     @Bean

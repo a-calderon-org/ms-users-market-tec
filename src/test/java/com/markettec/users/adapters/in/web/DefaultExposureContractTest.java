@@ -55,12 +55,14 @@ class DefaultExposureContractTest {
             "users.email.enabled", "users.session.logout.enabled", "users.session.refresh.enabled",
             "users.session.http.enabled", "users.session.http.https-topology-verified",
             "users.google.enabled", "users.google.login-enabled", "users.google.registration.enabled",
-            "users.google.http.enabled", "users.google.http.same-site-verified");
+            "users.google.http.enabled", "users.google.http.same-site-verified",
+            "users.gateway.user-token-relocation.enabled");
 
     @Autowired MockMvc mvc;
     @Autowired Environment environment;
 
     @Test void everyRiskFlagDefaultsToFalse() {
+        assertEquals(14, RISK_FLAGS.size());
         for (String flag : RISK_FLAGS)
             assertEquals(Boolean.FALSE, environment.getProperty(flag, Boolean.class), flag);
         assertEquals(0, environment.getActiveProfiles().length, "no SQL profile by default");

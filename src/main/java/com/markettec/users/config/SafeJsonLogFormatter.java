@@ -14,6 +14,8 @@ public final class SafeJsonLogFormatter implements StructuredLogFormatter<ILoggi
     private static final String REFRESH_LOGGER = "com.markettec.users.application.session.SessionAuthority";
     private static final String REFRESH_HTTP_LOGGER = "com.markettec.users.adapters.in.web.SessionRefreshController";
     private static final String MAIL_LOGGER = "com.markettec.users.adapters.out.mail.HttpEmailLinkSender";
+    private static final String SQL_RETRY_LOGGER = "com.markettec.users.adapters.out.sql.SqlStartupRetry";
+    private static final Set<String> SQL_RETRY_OUTCOMES = Set.of("retry_scheduled", "recovered", "exhausted");
     private static final Set<String> REFRESH_OUTCOMES = Set.of("rotated", "consumed_confirmed", "proof_invalid", "session_closed");
     private static final Set<String> MAIL_OUTCOMES = Set.of("accepted", "provider_rejected", "transport_failed", "timeout", "cancelled");
     private static final Set<String> MAIL_CHANNELS = Set.of("login", "proof");
@@ -31,8 +33,9 @@ public final class SafeJsonLogFormatter implements StructuredLogFormatter<ILoggi
         boolean refresh = (REFRESH_LOGGER.equals(event.getLoggerName()) || REFRESH_HTTP_LOGGER.equals(event.getLoggerName()))
                 && "refresh_audit".equals(event.getMessage());
         boolean mail = MAIL_LOGGER.equals(event.getLoggerName()) && "email_delivery_audit".equals(event.getMessage());
+        boolean sqlRetry = SQL_RETRY_LOGGER.equals(event.getLoggerName()) && "sql_startup_retry".equals(event.getMessage());
         fields.put("message", request ? "request_completed" : failure ? "request_failed" : refresh ? "refresh_audit"
-                : mail ? "email_delivery_audit" : "runtime_event");
+                : mail ? "email_delivery_audit" : sqlRetry ? "sql_startup_retry" : "runtime_event");
         String correlation = event.getMDCPropertyMap().get("correlationId");
         if (correlation != null && correlation.matches("[A-Za-z0-9._-]{1,128}")) fields.put("correlationId", correlation);
         if (event.getThrowableProxy() != null) fields.put("exception_type", event.getThrowableProxy().getClassName());
@@ -58,6 +61,16 @@ public final class SafeJsonLogFormatter implements StructuredLogFormatter<ILoggi
                 if ("channel".equals(pair.key) && pair.value instanceof String c && MAIL_CHANNELS.contains(c)) fields.put("channel", c);
                 if ("outcome".equals(pair.key) && pair.value instanceof String o && MAIL_OUTCOMES.contains(o)) fields.put("outcome", o);
                 if ("providerStatus".equals(pair.key) && pair.value instanceof Integer s && s >= 100 && s <= 599) fields.put("providerStatus", s);
+            }
+        }
+        if (sqlRetry && event.getKeyValuePairs() != null) {
+            for (var pair : event.getKeyValuePairs()) {
+                if ("outcome".equals(pair.key) && pair.value instanceof String o && SQL_RETRY_OUTCOMES.contains(o)) fields.put("outcome", o);
+                if ("attempt".equals(pair.key) && pair.value instanceof Integer a && a >= 1 && a <= 100) fields.put("attempt", a);
+                if ("sqlState".equals(pair.key) && pair.value instanceof String s && s.matches("[0-9A-Z]{5}")) fields.put("sqlState", s);
+                if ("vendorCode".equals(pair.key) && pair.value instanceof Integer c && c >= 0 && c <= 999999) fields.put("vendorCode", c);
+                if ("delayMs".equals(pair.key) && pair.value instanceof Long d && d >= 0) fields.put("delayMs", d);
+                if ("elapsedMs".equals(pair.key) && pair.value instanceof Long e && e >= 0) fields.put("elapsedMs", e);
             }
         }
         return JSON.writeToString(fields);

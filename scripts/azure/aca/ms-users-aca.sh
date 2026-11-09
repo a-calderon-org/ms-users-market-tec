@@ -101,7 +101,10 @@ case "$STEP" in
     for f in "${FLAGS[@]}"; do env_args+=("$f=false"); done
     if az containerapp show -g "$RG" -n "$APP" -o none 2>/dev/null; then
       az containerapp update -g "$RG" -n "$APP" --image "$ACR.azurecr.io/ms-users:$SHA" \
-        --revision-suffix "r${SHA:0:7}" --replace-env-vars "${env_args[@]}" --tags "sha=$SHA" -o none
+        --revision-suffix "r${SHA:0:7}" --replace-env-vars "${env_args[@]}" -o none
+      # `containerapp update --tags` replaces every tag on the resource; merge only `sha` instead.
+      az resource tag --ids "$(az containerapp show -g "$RG" -n "$APP" --query id -o tsv)" \
+        --is-incremental --tags "sha=$SHA" -o none
     else
       az containerapp create -g "$RG" -n "$APP" --environment "$ENV" --workload-profile-name Consumption \
         --image "$ACR.azurecr.io/ms-users:$SHA" --registry-server "$ACR.azurecr.io" --registry-identity "$id" \
@@ -112,20 +115,30 @@ case "$STEP" in
         --ingress external --target-port 8080 --transport auto --revisions-mode single \
         --revision-suffix "r${SHA:0:7}" --tags "sha=$SHA" service=ms-users env=staging -o none
     fi
-    # Probes: generous startup window for a cold start that also resumes the serverless database.
+    # Probes: `containerapp update` keeps the probes already on the template. Only a probe type that is missing
+    # (new app) gets the default below; an existing probe — e.g. a Startup probe tuned for a cold start that also
+    # resumes the serverless database — is never overwritten on redeploy.
     app_id=$(az containerapp show -g "$RG" -n "$APP" --query id -o tsv)
     tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+    rc=0
     az rest --method get --url "https://management.azure.com$app_id?api-version=2024-03-01" | python3 -c '
 import json,sys
 d=json.load(sys.stdin); t=d["properties"]["template"]; c=t["containers"][0]
 h=lambda: {"path":"/health","port":8080}
-want=[{"type":"Startup","httpGet":h(),"initialDelaySeconds":10,"periodSeconds":10,"timeoutSeconds":5,"failureThreshold":30},
+defaults=[{"type":"Startup","httpGet":h(),"initialDelaySeconds":1,"periodSeconds":3,"timeoutSeconds":5,"failureThreshold":30},
       {"type":"Readiness","httpGet":h(),"periodSeconds":15,"timeoutSeconds":5,"failureThreshold":3},
       {"type":"Liveness","httpGet":h(),"periodSeconds":30,"timeoutSeconds":5,"failureThreshold":3}]
-if c.get("probes")==want: sys.exit(3)
-c["probes"]=want; t["revisionSuffix"]=(t.get("revisionSuffix") or "r")[:20]+"p"
-json.dump({"properties":{"template":t}},sys.stdout)' > "$tmp" && \
-      az rest --method patch --url "https://management.azure.com$app_id?api-version=2024-03-01" --body "@$tmp" -o none || true
+probes=list(c.get("probes") or []); present={p.get("type") for p in probes}
+missing=[p for p in defaults if p["type"] not in present]
+if not missing: sys.exit(3)
+c["probes"]=probes+missing; t["revisionSuffix"]=(t.get("revisionSuffix") or "r")[:20]+"p"
+json.dump({"properties":{"template":t}},sys.stdout)' > "$tmp" || rc=$?
+    case "$rc" in
+      0) az rest --method patch --url "https://management.azure.com$app_id?api-version=2024-03-01" --body "@$tmp" -o none
+         log "added missing default probes" ;;
+      3) log "probes kept as configured" ;;
+      *) die "could not read the container app template" ;;
+    esac
     log "app $(az containerapp show -g "$RG" -n "$APP" --query properties.configuration.ingress.fqdn -o tsv)" ;;
 
   sql-access)

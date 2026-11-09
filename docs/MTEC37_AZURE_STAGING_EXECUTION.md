@@ -128,7 +128,7 @@ Fuente declarativa: [`scripts/azure/appsettings.staging.json`](../scripts/azure/
 | `USERS_SQL_SERVER` / `USERS_SQL_DATABASE` / `USERS_SQL_PORT` / `USERS_SQL_POOL_SIZE` | `sql-markettec-dev.database.windows.net` / `sqldb-ms-users-dev` / `1433` / `3` |
 | `USERS_CSRF_ACTIVE_KID` | elegido por el operador (`[A-Za-z0-9_-]{1,32}`) |
 | `USERS_CSRF_KEYS_JSON` | referencia de Key Vault |
-| Los 13 flags `USERS_*` con valor por defecto `false`, incluidos `USERS_SESSION_HTTP_HTTPS_TOPOLOGY_VERIFIED` y `USERS_GOOGLE_HTTP_SAME_SITE_VERIFIED` | `false`, explícitos |
+| Los 14 flags `USERS_*` con valor por defecto `false`, incluidos `USERS_SESSION_HTTP_HTTPS_TOPOLOGY_VERIFIED` y `USERS_GOOGLE_HTTP_SAME_SITE_VERIFIED` | `false`, explícitos |
 
 `scripts/tests/test_azure_staging_config.py` falla si:
 

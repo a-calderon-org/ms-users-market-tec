@@ -1,5 +1,5 @@
 {
-  "normal_count": 401,
+  "normal_count": 415,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -367,6 +367,17 @@
       "gatewayTokenIsNeverReadAsAUserCredential",
       "relocatedHeaderStillNeedsExactlyOneVerifiedBearer",
       "relocationIsOptInAndOffByDefault"
+    ],
+    "com.markettec.users.adapters.out.sql.SqlStartupRetryTest": [
+      "pausedDatabaseIsRetriedInProcessAndTheStartupStepSucceedsOnceItResumes",
+      "attemptsAreBoundedBackoffIsCappedAndTheLastFailureIsRethrown",
+      "noNewAttemptStartsOnceTheElapsedBudgetWouldBeExceeded",
+      "defaultPolicyEndsInsideTheStagingStartupProbeWindow",
+      "onlyTheStartupDatasourceUsesTheRetry",
+      "retryLogsCarryCodesAndTimingsButNeverDriverMessages"
+    ],
+    "com.markettec.users.config.SqlColdStartRecoveryTest": [
+      "firstConnectionFailsWhileSqlResumesAndTheSameProcessStartsAndAnswers"
     ]
   }
 }

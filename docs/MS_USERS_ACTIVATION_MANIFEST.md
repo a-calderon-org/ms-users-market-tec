@@ -6,7 +6,7 @@
 
 ## 1. Superficie HTTP real con los valores por defecto
 
-Valores por defecto: sin perfil SQL y los 13 flags de riesgo en `false`. La superficie la fija `HttpSurfaceInventoryTest` mediante `HttpSurfaceInventory`, que consulta todos los beans `HandlerMapping` del contexto y sus ancestros, con la misma búsqueda que el `DispatcherServlet`.
+Valores por defecto: sin perfil SQL y los 14 flags de riesgo en `false`. La superficie la fija `HttpSurfaceInventoryTest` mediante `HttpSurfaceInventory`, que consulta todos los beans `HandlerMapping` del contexto y sus ancestros, con la misma búsqueda que el `DispatcherServlet`.
 
 **Qué se enumera.** Solo se enumeran mappings cuya **clase de ejecución es exactamente** una de las verificadas: `RequestMappingHandlerMapping`, `AdditionalHealthEndpointPathsWebMvcHandlerMapping` (Actuator), `RouterFunctionMapping`, `SimpleUrlHandlerMapping`, `BeanNameUrlHandlerMapping`, `WelcomePageHandlerMapping` y `WelcomePageNotAcceptableHandlerMapping`. Se comparan por nombre completamente calificado. De los dos de welcome page se revisó el bytecode: delegan en la resolución del registro y como mucho la restringen.
 - Una **subclase** de cualquiera de estas clases no se considera de confianza, porque puede servir rutas desde `getHandlerInternal` sin registrarlas.
