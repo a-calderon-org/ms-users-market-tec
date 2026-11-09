@@ -35,7 +35,7 @@ public final class SqlStartupRetry {
     /**
      * The whole startup has to fit the staging Startup probe window (initialDelay 1 s + 30 × 3 s ≈ 91 s), counted
      * from JVM start, not from this bean. {@code maxElapsed} is therefore the last moment, since process start, at
-     * which a new attempt may begin: 46 s + one attempt bounded by the driver login timeout (30 s) + schema
+     * which a retry may begin: 46 s + one attempt bounded by the driver login timeout (30 s) + schema
      * validation over that same connection (reserve 10 s) leaves a margin of ≥ 5 s, so the process gives up on its
      * own instead of being killed mid-attempt or mid-Flyway.
      */
@@ -101,11 +101,7 @@ public final class SqlStartupRetry {
                 }
                 boolean exhausted = attempt >= policy.maxAttempts()
                         || elapsed.plus(delay).compareTo(policy.maxElapsed()) > 0;
-                LOG.atWarn().addKeyValue("attempt", attempt)
-                        .addKeyValue("outcome", exhausted ? "exhausted" : "retry_scheduled")
-                        .addKeyValue("sqlState", sql.getSQLState()).addKeyValue("vendorCode", sql.getErrorCode())
-                        .addKeyValue("delayMs", exhausted ? 0L : delay.toMillis())
-                        .addKeyValue("elapsedMs", elapsed.toMillis()).log("sql_startup_retry");
+                logTransientOutcome(attempt, sql, exhausted, delay, elapsed);
                 if (exhausted) throw failure;
                 try {
                     sleeper.sleep(delay);
@@ -113,10 +109,25 @@ public final class SqlStartupRetry {
                     Thread.currentThread().interrupt();
                     throw failure;
                 }
+                // Scheduling delays can make the actual backoff longer than the requested sleep.
+                Duration afterBackoff = Duration.ofNanos(nanoTime.getAsLong() - start);
+                if (afterBackoff.compareTo(policy.maxElapsed()) > 0) {
+                    logTransientOutcome(attempt, sql, true, delay, afterBackoff);
+                    throw failure;
+                }
                 Duration doubled = delay.multipliedBy(2);
                 delay = doubled.compareTo(policy.maxDelay()) > 0 ? policy.maxDelay() : doubled;
             }
         }
+    }
+
+    private static void logTransientOutcome(int attempt, SQLException sql, boolean exhausted, Duration delay,
+                                            Duration elapsed) {
+        LOG.atWarn().addKeyValue("attempt", attempt)
+                .addKeyValue("outcome", exhausted ? "exhausted" : "retry_scheduled")
+                .addKeyValue("sqlState", sql.getSQLState()).addKeyValue("vendorCode", sql.getErrorCode())
+                .addKeyValue("delayMs", exhausted ? 0L : delay.toMillis())
+                .addKeyValue("elapsedMs", elapsed.toMillis()).log("sql_startup_retry");
     }
 
     /** The first SQLException in the cause chain when it is transient, otherwise null. */

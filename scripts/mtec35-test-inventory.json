@@ -1,5 +1,5 @@
 {
-  "normal_count": 432,
+  "normal_count": 433,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -378,6 +378,7 @@
       "onlyTheStartupDatasourceUsesTheRetry",
       "retryLogsCarryCodesAndTimingsButNeverDriverMessages",
       "elapsedBudgetIsChargedFromProcessStartNotFromTheBean",
+      "aBackoffThatRunsLongDoesNotStartARetryOutsideTheBudget",
       "permanentTlsFailureIsLoggedAsAFixedClassWithoutDriverOrCertificateText"
     ],
     "com.markettec.users.config.SqlColdStartRecoveryTest": [

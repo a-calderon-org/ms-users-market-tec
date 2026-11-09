@@ -129,6 +129,23 @@ class SqlStartupRetryTest {
         assertEquals(2, calls.get());
     }
 
+    @Test
+    void aBackoffThatRunsLongDoesNotStartARetryOutsideTheBudget() {
+        var calls = new AtomicInteger();
+        var failure = poolFailure(resuming());
+        assertSame(failure, assertThrows(PoolInitializationException.class, () -> SqlStartupRetry.run(POLICY, () -> {
+            calls.incrementAndGet();
+            throw failure;
+        }, delay -> {
+            sleeps.add(delay);
+            clock.addAndGet(delay.plusSeconds(5).toNanos());
+        }, clock::get, Duration.ofSeconds(42))));
+        assertEquals(List.of(Duration.ofSeconds(2)), sleeps);
+        assertEquals(1, calls.get());
+        assertEquals("exhausted", logs.list.getLast().getKeyValuePairs().stream()
+                .filter(field -> field.key.equals("outcome")).findFirst().orElseThrow().value);
+    }
+
     /** mssql-jdbc: TDSChannel.enableSSL terminates with SQLState 08S01 and keeps the JSSE failure as the cause. */
     private static SQLException driverTlsFailure(Throwable jsse) {
         return new SQLException(MARKER, "08S01", 0, jsse);
