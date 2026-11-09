@@ -45,6 +45,12 @@ scripts/azure/aca/ms-users-aca.sh verify
 
 `sql-access` debe ejecutarse antes de que la primera revisión pueda arrancar; al terminar crea una revisión nueva, porque una revisión `ActivationFailed` no se recupera con `restart`. Los 13 flags de autenticación quedan en `false`; el script nunca los activa.
 
+## Evidencia de despliegue (2026-11-09, `main@08cac40`)
+
+- Arranque desde 0 réplicas: `GET /health` → 200 en 36 s; registros de `ManagedIdentityCredential`, `DbValidate` (Flyway) y `UsersApplication`, sin `ERROR`; 0 reinicios.
+- Java: Temurin 21.0.13, PID 1 `java -jar /opt/ms-users/app.jar`.
+- La base usa `autoPauseDelay=60` min. El arranque en frío con la base pausada al mismo tiempo no se ha medido todavía; el arranque tolera hasta 5 min (sonda Startup).
+
 ## Coste estimado (30 días)
 
 | Concepto | Estimación |
