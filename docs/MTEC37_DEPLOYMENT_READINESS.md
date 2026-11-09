@@ -8,6 +8,9 @@ original. Consultar [recuperación](MTEC37_RECOVERY_REPORT.md),
 [re-QA de la subfase 2](MTEC37_REQA_REVIEW.md). Esta guía incorpora la corrección
 de readiness de la re-QA; no acredita validación SQL completa ni despliegue.
 
+> **2026-11-08:** el procedimiento operativo vigente, con el inventario Azure verificado en modo lectura,
+> está en [MTEC37_AZURE_STAGING_EXECUTION.md](MTEC37_AZURE_STAGING_EXECUTION.md). Este documento queda como referencia histórica.
+
 ## Java 21 y alternativas de App Service
 
 El proyecto compila con release 21 y Maven Wrapper 3.9.11. El JAR ejecutable
