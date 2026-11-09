@@ -13,6 +13,11 @@ spring:
 
 # No authentication flow is exposed. The verifier bean is opt-in for a future trusted caller.
 users:
+  gateway:
+    # MTEC-12/D04: read the internal user JWT from X-MTEC-User-Authorization (APIM relocates it because
+    # Container Apps authentication uses Authorization for the gateway's managed-identity token).
+    user-token-relocation:
+      enabled: ${USERS_GATEWAY_USER_TOKEN_RELOCATION_ENABLED:false}
   csrf:
     active-kid: ${USERS_CSRF_ACTIVE_KID:}
     keys-json: ${USERS_CSRF_KEYS_JSON:}
