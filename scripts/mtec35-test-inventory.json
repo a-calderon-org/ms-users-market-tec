@@ -1,5 +1,5 @@
 {
-  "normal_count": 397,
+  "normal_count": 401,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -361,6 +361,12 @@
     ],
     "com.markettec.users.adapters.in.web.ProtectedApiCorsFilterTest": [
       "reservedAndBrowserIpv4OriginsCannotBeConfiguredNorEarnCredentialedPreflight"
+    ],
+    "com.markettec.users.adapters.in.web.GatewayUserTokenFilterTest": [
+      "relocatedUserJwtReachesTheControllerAlongsideTheGatewayToken",
+      "gatewayTokenIsNeverReadAsAUserCredential",
+      "relocatedHeaderStillNeedsExactlyOneVerifiedBearer",
+      "relocationIsOptInAndOffByDefault"
     ]
   }
 }
