@@ -120,6 +120,8 @@ class SqlUserConfigTest {
                         assertTrue(org.springframework.core.NestedExceptionUtils.getMostSpecificCause(context.getStartupFailure())
                                 .getMessage().contains("Managed identity unavailable"));
                     });
+            // MTEC-37: a non-transient failure is not retried by the startup SQL wait.
+            org.mockito.Mockito.verify(failedIdentity, org.mockito.Mockito.times(1)).getConnection();
             connections.verify(() -> AzureSqlConnection.dataSource("example.invalid", "isolated", 1433), org.mockito.Mockito.never());
         }
     }
