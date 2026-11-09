@@ -238,7 +238,7 @@
     "com.markettec.users.application.session.GoogleRegistrationServiceTest": [
       "existingEmailOrSubjectCannotLinkAutomatically",
       "invalidProofBrowserAndExpiryCannotCreateAccount",
-      "onlyExactInstitutionalDomainsAreEligible",
+      "anyVerifiedGoogleEmailCanRegisterNotOnlyInstitutionalDomains",
       "persistenceFailureRollsBackUserAndAttempt",
       "signingAndSessionFailureRollBackAccountLinkAndAttempt",
       "unverifiedOrMissingEmailCannotRegister",
