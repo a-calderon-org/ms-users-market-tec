@@ -29,6 +29,8 @@ Sustituye al App Service F1 `ms-users-stg-markettec` (estado `QuotaExceeded`, si
 
 Una regla de firewall /32 por cada IP de `outboundIpAddresses` de la app (161 IP compartidas por el egreso de Container Apps en la región, reglas `ms-users-aca-*`). No se usa la regla "Allow Azure services" (0.0.0.0) ni rangos amplios. Riesgo aceptado para staging, igual que con F1: esas IP las comparten otros clientes de Container Apps en Canada Central; la autenticación sigue siendo exclusivamente Entra (`azureAdOnlyAuthentication=true`). La alternativa privada (VNet + service endpoint o private endpoint) no cabe en el presupuesto por el balanceador.
 
+**Riesgo operativo pendiente: rotación de las 161 reglas.** Azure puede cambiar el conjunto de `outboundIpAddresses` del entorno sin aviso. Las reglas `ms-users-aca-*` no se reconcilian solas: si cambia una IP, la app pierde acceso a SQL (fallo de arranque o de `/health`) y las reglas de IP que ya no pertenecen al entorno siguen abiertas. Hasta que exista una reconciliación automatizada (alta de IP nuevas y baja de las obsoletas), `sql-access` debe volver a ejecutarse tras cada cambio del entorno o ante errores de conexión SQL (solo crea reglas, no borra las obsoletas), y debe revisarse periódicamente a mano que las reglas `ms-users-aca-*` coinciden con `outboundIpAddresses`, eliminando las sobrantes. No se aborda en MTEC-37.
+
 ## Permisos SQL del runtime
 
 `scripts/azure/sql/grant-runtime-identity.sql` concede además `VIEW DEFINITION` sobre `dbo.external_identities` únicamente: `SqlSchemaValidator` lee `sys.computed_columns.definition` y, solo con `SELECT`, esa columna es `NULL` y el arranque falla con `BeanCreationException`. Verificado con `EXECUTE AS USER`.

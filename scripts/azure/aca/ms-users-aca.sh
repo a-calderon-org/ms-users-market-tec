@@ -75,10 +75,17 @@ case "$STEP" in
 
   image)
     require_green_sha
+    # The build context is exactly the tree of the CI-approved commit. Nothing is copied from the
+    # local working tree: a modified or untracked Dockerfile/.dockerignore must never reach the image.
+    git -C "$ROOT" cat-file -e "$SHA^{commit}" 2>/dev/null || die "commit $SHA is not available locally (git fetch)"
+    for required in Dockerfile .dockerignore; do
+      git -C "$ROOT" cat-file -e "$SHA:$required" 2>/dev/null || die "$required missing in commit $SHA"
+    done
     work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-    git -C "$ROOT" archive "$SHA" | tar -x -C "$work"
-    cp "$ROOT/Dockerfile" "$ROOT/.dockerignore" "$work/" 2>/dev/null || true
-    [[ -f "$work/Dockerfile" ]] || die "Dockerfile missing"
+    git -C "$ROOT" archive --format=tar "$SHA" | tar -x -C "$work"
+    for required in Dockerfile .dockerignore; do
+      [[ -f "$work/$required" ]] || die "$required missing from the archive of $SHA"
+    done
     az acr login -n "$ACR" >/dev/null
     docker buildx build --platform linux/amd64 --label "org.opencontainers.image.revision=$SHA" \
       -t "$ACR.azurecr.io/ms-users:$SHA" --push "$work"
