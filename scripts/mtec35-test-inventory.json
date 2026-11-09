@@ -1,5 +1,5 @@
 {
-  "normal_count": 415,
+  "normal_count": 433,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -44,6 +44,7 @@
     "persistsAndFindsEveryUserAndProfileFieldLosslessly",
     "proofExpiringBeforeTheInsertCommitsNothing",
     "realDeadlockRollsBackAndRetriesTheCompleteUnit",
+    "realDriverTlsCertificateFailuresArePermanentWhileARefusedConnectionIsRetryable",
     "realSqlProfileFailureIsTranslatedAndRollsBackTheEarlierUserInsert",
     "recentProofAndMutationRollbackTogether",
     "recentProofCommitsOnceWithSensitiveMutation",
@@ -64,6 +65,7 @@
     "sqlLogoutKeepsOnlyLastProofForIdempotentCleanup",
     "sqlRefreshLogoutRaceCannotRevokeRotatedWinner",
     "staleAggregateCannotOverwriteCommittedChanges",
+    "startupPoolRunsFlywayAndSchemaValidationOverTheSingleFailFastConnection",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",
     "updatesOnlyTheProfileDetailsAndIncrementsVersion"
@@ -374,10 +376,18 @@
       "noNewAttemptStartsOnceTheElapsedBudgetWouldBeExceeded",
       "defaultPolicyEndsInsideTheStagingStartupProbeWindow",
       "onlyTheStartupDatasourceUsesTheRetry",
-      "retryLogsCarryCodesAndTimingsButNeverDriverMessages"
+      "retryLogsCarryCodesAndTimingsButNeverDriverMessages",
+      "elapsedBudgetIsChargedFromProcessStartNotFromTheBean",
+      "aBackoffThatRunsLongDoesNotStartARetryOutsideTheBudget",
+      "permanentTlsFailureIsLoggedAsAFixedClassWithoutDriverOrCertificateText"
     ],
     "com.markettec.users.config.SqlColdStartRecoveryTest": [
       "firstConnectionFailsWhileSqlResumesAndTheSameProcessStartsAndAnswers"
+    ],
+    "com.markettec.users.adapters.out.sql.SqlStartupPoolTest": [
+      "runtimeShapeWithMinimumIdleZeroDropsTheFailFastConnection",
+      "startupValidationRunsOverTheSingleRecoveredConnectionThenTheRuntimeShapeReturns",
+      "startupCompleteIgnoresOtherAndClosedDataSources"
     ]
   }
 }

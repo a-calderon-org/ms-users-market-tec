@@ -149,6 +149,30 @@ final class IsolatedSqlServer implements AutoCloseable {
         return source;
     }
 
+    /** Same server, but trusting only the JDK default CAs: the ephemeral certificate is untrusted (PKIX). */
+    SQLServerDataSource untrustedCertificateSource() throws Exception {
+        SQLServerDataSource source = new SQLServerDataSource();
+        source.setServerName(container.getHost());
+        source.setPortNumber(mappedPort);
+        source.setDatabaseName(DATABASE);
+        source.setUser("sa");
+        source.setPassword(password);
+        source.setEncrypt("true");
+        source.setTrustServerCertificate(false);
+        source.setHostNameInCertificate("localhost");
+        source.setLoginTimeout(10);
+        sources.add(source);
+        return source;
+    }
+
+    /** Trusted chain, but the certificate does not name the expected host. */
+    SQLServerDataSource mismatchedHostSource() throws Exception {
+        SQLServerDataSource source = source(DATABASE);
+        source.setHostNameInCertificate("private-sql-host.database.windows.net");
+        source.setLoginTimeout(10);
+        return source;
+    }
+
     java.util.Properties workerConnection() {
         var config = new java.util.Properties();
         config.setProperty("port", Integer.toString(mappedPort));
