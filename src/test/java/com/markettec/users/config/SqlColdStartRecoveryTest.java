@@ -45,12 +45,20 @@ class SqlColdStartRecoveryTest {
         ApplicationListener<WebServerInitializedEvent> opened = event -> serving.set(true);
         try (var connections = mockStatic(AzureSqlConnection.class);
              var schema = mockStatic(SqlSchemaValidator.class)) {
+            // The validation borrows the pool like the real one (DB_NAME, Flyway, catalogue), but stays offline.
+            schema.when(() -> SqlSchemaValidator.validate(any(), eq("isolated"))).thenAnswer(call -> {
+                javax.sql.DataSource pool = call.getArgument(0);
+                for (int step = 0; step < 3; step++) {
+                    try (var borrowed = pool.getConnection()) { assertNotNull(borrowed); }
+                }
+                return null;
+            });
             connections.when(() -> AzureSqlConnection.managedIdentityDataSource("example.database.windows.net",
                     "isolated", 1433)).thenReturn(database);
             try (var context = new SpringApplicationBuilder(UsersApplication.class).listeners(opened)
                     .profiles("sql-appservice")
                     .properties("server.port=0", "management.server.port=0", "USERS_SQL_SERVER=example.database.windows.net",
-                            "USERS_SQL_DATABASE=isolated", "USERS_SQL_PORT=1433", "USERS_SQL_POOL_SIZE=1",
+                            "USERS_SQL_DATABASE=isolated", "USERS_SQL_PORT=1433", "USERS_SQL_POOL_SIZE=3",
                             "users.sql.readiness.cache-ttl=0s", "USERS_CSRF_ACTIVE_KID=sql-test",
                             "USERS_CSRF_KEYS_JSON={\"sql-test\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"}")
                     .run()) {
@@ -58,7 +66,11 @@ class SqlColdStartRecoveryTest {
                 assertFalse(servedDuringRetry.get(), "HTTP opened before the SQL retry finished");
                 // Exactly one failed and one successful login; the schema was validated once, after recovery.
                 schema.verify(() -> SqlSchemaValidator.validate(any(), eq("isolated")), times(1));
-                assertTrue(attempts.get() >= 2);
+                // The recovered connection is the one the validation used: no third login before HTTP.
+                assertEquals(2, attempts.get());
+                var pool = context.getBean(com.zaxxer.hikari.HikariDataSource.class);
+                assertEquals(3, pool.getMaximumPoolSize());
+                assertEquals(0, pool.getMinimumIdle());
                 connections.verify(() -> AzureSqlConnection.dataSource(any(), any(), anyInt()), never());
 
                 var http = HttpClient.newHttpClient();
@@ -71,6 +83,7 @@ class SqlColdStartRecoveryTest {
                         HttpResponse.BodyHandlers.ofString());
                 assertEquals(200, readiness.statusCode());
                 assertEquals("{\"status\":\"UP\"}", readiness.body());
+                assertEquals(2, attempts.get(), "readiness reused the startup connection");
             }
         }
     }

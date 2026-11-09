@@ -14,6 +14,16 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLHandshakeException;
+import javax.net.ssl.SSLPeerUnverifiedException;
+import java.io.EOFException;
+import java.net.ConnectException;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.security.cert.CertPathBuilderException;
+import java.security.cert.CertPathValidatorException;
+import java.security.cert.CertificateException;
 import java.sql.SQLException;
 import java.sql.SQLTransientConnectionException;
 import java.time.Duration;
@@ -76,17 +86,131 @@ class SqlStartupRetryTest {
 
     @Test
     void defaultPolicyEndsInsideTheStagingStartupProbeWindow() {
-        // Container Apps Startup probe in staging: initialDelay 1 s + 30 failures x 3 s period.
+        // Container Apps Startup probe in staging: initialDelay 1 s + 30 failures x 3 s period, from JVM start.
         Duration probeWindow = Duration.ofSeconds(1 + 30 * 3);
         Duration perAttempt = Duration.ofSeconds(31); // driver loginTimeout (30 s) plus Hikari fail-fast pause
-        assertTrue(POLICY.maxElapsed().plus(perAttempt).compareTo(probeWindow.minusSeconds(5)) <= 0);
+        Duration validation = SqlStartupRetry.Policy.VALIDATION_RESERVE;
+        assertEquals(probeWindow, SqlStartupRetry.Policy.STARTUP_PROBE_WINDOW);
+        assertTrue(POLICY.maxElapsed().plus(perAttempt).plus(validation).compareTo(probeWindow.minusSeconds(4)) <= 0);
+        // The 97.3 s reproduction: JVM boot (~12 s) is charged too; the last attempt still ends inside the window.
+        Duration jvmBoot = Duration.ofSeconds(12);
         var calls = new AtomicInteger();
-        assertThrows(PoolInitializationException.class, () -> run(POLICY, () -> {
+        assertThrows(PoolInitializationException.class, () -> SqlStartupRetry.run(POLICY, () -> {
             calls.incrementAndGet();
             clock.addAndGet(perAttempt.toNanos());
             throw poolFailure(new SQLException(MARKER, "08S01", 0));
+        }, delay -> { sleeps.add(delay); clock.addAndGet(delay.toNanos()); }, clock::get, jvmBoot));
+        // 12-43 s and 45-76 s since JVM start; a third would begin after 46 s. 76 s + validation < 91 s.
+        assertEquals(2, calls.get());
+        assertTrue(jvmBoot.plus(Duration.ofNanos(clock.get())).plus(validation).compareTo(probeWindow) < 0);
+    }
+
+    @Test
+    void elapsedBudgetIsChargedFromProcessStartNotFromTheBean() {
+        var calls = new AtomicInteger();
+        String result = SqlStartupRetry.run(POLICY, () -> {
+            if (calls.incrementAndGet() <= 3) {
+                clock.addAndGet(Duration.ofSeconds(1).toNanos()); // 40613 answers quickly while resuming
+                throw poolFailure(resuming());
+            }
+            return "pool";
+        }, delay -> { sleeps.add(delay); clock.addAndGet(delay.toNanos()); }, clock::get, Duration.ofSeconds(10));
+        assertEquals("pool", result);
+        assertEquals(List.of(Duration.ofSeconds(2), Duration.ofSeconds(4), Duration.ofSeconds(8)), sleeps);
+        sleeps.clear();
+        clock.set(0);
+        calls.set(0);
+        // Same failures after a 40 s boot: 40+1+2 = 43 s, a second retry would begin after 46 s, so none starts.
+        assertThrows(PoolInitializationException.class, () -> SqlStartupRetry.run(POLICY, () -> {
+            calls.incrementAndGet();
+            clock.addAndGet(Duration.ofSeconds(1).toNanos());
+            throw poolFailure(resuming());
+        }, delay -> { sleeps.add(delay); clock.addAndGet(delay.toNanos()); }, clock::get, Duration.ofSeconds(40)));
+        assertEquals(2, calls.get());
+    }
+
+    /** mssql-jdbc: TDSChannel.enableSSL terminates with SQLState 08S01 and keeps the JSSE failure as the cause. */
+    private static SQLException driverTlsFailure(Throwable jsse) {
+        return new SQLException(MARKER, "08S01", 0, jsse);
+    }
+
+    private static SSLHandshakeException handshake(String message, Throwable cause) {
+        var failure = new SSLHandshakeException(message);
+        failure.initCause(cause);
+        return failure;
+    }
+
+    static Stream<SQLException> permanentTlsFailures() {
+        return Stream.of(
+                // Untrusted chain: PKIX path building failed (JDK ValidatorException is a CertificateException).
+                driverTlsFailure(handshake("PKIX path building failed",
+                        new CertificateException("unable to find valid certification path", new CertPathBuilderException("x")))),
+                // Expired / revoked: CertPathValidatorException under the handshake.
+                driverTlsFailure(handshake("validity check failed", new CertPathValidatorException("expired"))),
+                // Host name in certificate does not match hostNameInCertificate (driver's trust manager).
+                driverTlsFailure(handshake("server name", new CertificateException("Failed to validate the server name"))),
+                driverTlsFailure(new SSLPeerUnverifiedException("peer not authenticated")),
+                // Negotiation rejected (no common protocol/cipher): configuration, not the network.
+                driverTlsFailure(new SSLHandshakeException("No appropriate protocol")),
+                // Also when the driver marks the failure as SQLTransientConnectionException.
+                new SQLTransientConnectionException(MARKER, "08S01", 0,
+                        handshake("PKIX", new CertificateException("untrusted"))));
+    }
+
+    @ParameterizedTest
+    @MethodSource("permanentTlsFailures")
+    void certificateAndTlsNegotiationFailuresAreNeverRetriedEvenWithSqlState08S01(SQLException tls) {
+        assertEquals(SqlStartupRetry.Classification.TLS_PERMANENT, SqlStartupRetry.classify(tls));
+        assertFalse(SqlStartupRetry.isTransient(tls));
+        var calls = new AtomicInteger();
+        var failure = poolFailure(tls);
+        assertSame(failure, assertThrows(PoolInitializationException.class, () -> run(POLICY, () -> {
+            calls.incrementAndGet();
+            throw failure;
+        })));
+        assertEquals(1, calls.get());
+        assertTrue(sleeps.isEmpty());
+    }
+
+    static Stream<SQLException> recoverableConnectionFailures() {
+        return Stream.of(
+                // Gateway / resuming database cut the handshake: EOF, reset, timeout during TLS.
+                driverTlsFailure(handshake("Remote host terminated the handshake", new EOFException("SSL peer shut down"))),
+                driverTlsFailure(handshake("handshake", new SocketException("Connection reset"))),
+                driverTlsFailure(new SSLException("Read timed out", new SocketTimeoutException("Read timed out"))),
+                // Plain TCP: refused / timed out.
+                new SQLException(MARKER, "08S01", 0, new ConnectException("Connection refused")),
+                new SQLException(MARKER, "08S01", 0, new SocketTimeoutException("connect timed out")),
+                new SQLException(MARKER, "08S01", 0));
+    }
+
+    @ParameterizedTest
+    @MethodSource("recoverableConnectionFailures")
+    void networkInterruptionsIncludingACutHandshakeStayRetryable(SQLException failure) {
+        assertEquals(SqlStartupRetry.Classification.TRANSIENT, SqlStartupRetry.classify(failure));
+        var calls = new AtomicInteger();
+        assertEquals("pool", run(POLICY, () -> {
+            if (calls.incrementAndGet() == 1) throw poolFailure(failure);
+            return "pool";
         }));
-        assertEquals(2, calls.get()); // 0-31 s and 33-64 s; a third attempt would start after 50 s
+        assertEquals(2, calls.get());
+    }
+
+    @Test
+    void permanentTlsFailureIsLoggedAsAFixedClassWithoutDriverOrCertificateText() throws Exception {
+        String subject = "CN=private-sql-host.database.windows.net";
+        var tls = driverTlsFailure(handshake(MARKER + " " + subject, new CertificateException(subject)));
+        assertThrows(PoolInitializationException.class, () -> run(POLICY, () -> { throw poolFailure(tls); }));
+        assertEquals(1, logs.list.size());
+        String line = new SafeJsonLogFormatter().format(logs.list.get(0));
+        assertFalse(line.contains(MARKER), line);
+        assertFalse(line.contains("private-sql-host"), line);
+        JsonNode json = new ObjectMapper().readTree(line);
+        assertEquals("sql_startup_retry", json.get("message").asText());
+        assertEquals("permanent", json.get("outcome").asText());
+        assertEquals("tls_certificate", json.get("failureClass").asText());
+        assertEquals("08S01", json.get("sqlState").asText());
+        assertEquals(1, json.get("attempt").asInt());
     }
 
     @Test

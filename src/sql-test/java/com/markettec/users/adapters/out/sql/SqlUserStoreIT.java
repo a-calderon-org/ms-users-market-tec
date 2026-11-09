@@ -112,6 +112,81 @@ class SqlUserStoreIT {
         }
     }
 
+    /** Counts physical logins through the real driver. */
+    private static DataSource counting(DataSource driver, java.util.concurrent.atomic.AtomicInteger logins) {
+        return (DataSource) java.lang.reflect.Proxy.newProxyInstance(DataSource.class.getClassLoader(),
+                new Class<?>[]{DataSource.class}, (proxy, method, arguments) -> {
+                    if ("getConnection".equals(method.getName())) logins.incrementAndGet();
+                    try {
+                        return method.invoke(driver, arguments);
+                    } catch (java.lang.reflect.InvocationTargetException failure) {
+                        throw failure.getCause();
+                    }
+                });
+    }
+
+    @Test
+    void startupPoolRunsFlywayAndSchemaValidationOverTheSingleFailFastConnection() throws Exception {
+        var logins = new java.util.concurrent.atomic.AtomicInteger();
+        var config = new com.zaxxer.hikari.HikariConfig();
+        config.setDataSource(counting(server.source(IsolatedSqlServer.DATABASE), logins));
+        config.setPoolName("users-sql-startup-it");
+        config.setIdleTimeout(60000);
+        config.setMaxLifetime(600000);
+        config.setKeepaliveTime(0);
+        config.setConnectionTimeout(35000);
+        SqlStartupPool.configureForStartup(config);
+        try (var pool = new com.zaxxer.hikari.HikariDataSource(config)) {
+            assertEquals(1, logins.get());
+            // Real Flyway validate plus every catalogue check; a second concurrent connection would block here.
+            SqlSchemaValidator.validate(pool, IsolatedSqlServer.DATABASE);
+            assertEquals(1, logins.get(), "schema validation must not log in again after the startup connection");
+            SqlStartupPool.startupComplete(pool, 3);
+            assertEquals(3, pool.getMaximumPoolSize());
+            assertEquals(0, pool.getMinimumIdle());
+            try (var first = pool.getConnection(); var second = pool.getConnection()) {
+                assertEquals(IsolatedSqlServer.DATABASE,
+                        new JdbcTemplate(new org.springframework.jdbc.datasource.SingleConnectionDataSource(second, true))
+                                .queryForObject("SELECT DB_NAME()", String.class));
+                assertNotSame(first, second);
+            }
+        }
+    }
+
+    @Test
+    void realDriverTlsCertificateFailuresArePermanentWhileARefusedConnectionIsRetryable() throws Exception {
+        for (DataSource tls : new DataSource[]{server.untrustedCertificateSource(), server.mismatchedHostSource()}) {
+            var driverFailure = assertThrows(java.sql.SQLException.class, () -> tls.getConnection().close());
+            assertEquals("08S01", driverFailure.getSQLState(), "the driver reports TLS like a connection failure");
+            assertEquals(SqlStartupRetry.Classification.TLS_PERMANENT, SqlStartupRetry.classify(driverFailure));
+            // Through the production startup step: one attempt, no back-off, the original failure surfaces.
+            var attempts = new java.util.concurrent.atomic.AtomicInteger();
+            var config = new com.zaxxer.hikari.HikariConfig();
+            config.setDataSource(tls);
+            config.setPoolName("users-sql-tls-it");
+            SqlStartupPool.configureForStartup(config);
+            assertThrows(RuntimeException.class, () -> SqlStartupRetry.run(SqlStartupRetry.Policy.AZURE_SQL_RESUME,
+                    java.time.Duration.ZERO, () -> {
+                        attempts.incrementAndGet();
+                        return new com.zaxxer.hikari.HikariDataSource(config);
+                    }));
+            assertEquals(1, attempts.get());
+        }
+        int closedPort;
+        try (var socket = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+            closedPort = socket.getLocalPort();
+        }
+        var refused = new com.microsoft.sqlserver.jdbc.SQLServerDataSource();
+        refused.setServerName("127.0.0.1");
+        refused.setPortNumber(closedPort);
+        refused.setDatabaseName(IsolatedSqlServer.DATABASE);
+        refused.setEncrypt("true");
+        refused.setTrustServerCertificate(false);
+        refused.setLoginTimeout(2);
+        var network = assertThrows(java.sql.SQLException.class, () -> refused.getConnection().close());
+        assertEquals(SqlStartupRetry.Classification.TRANSIENT, SqlStartupRetry.classify(network));
+    }
+
     @AfterAll
     void stopOnlyTheDisposableContainer() throws Exception {
         server.close();

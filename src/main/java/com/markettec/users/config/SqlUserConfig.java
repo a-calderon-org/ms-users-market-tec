@@ -3,6 +3,7 @@ package com.markettec.users.config;
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.sql.AzureSqlConnection;
 import com.markettec.users.adapters.out.sql.SqlSchemaValidator;
+import com.markettec.users.adapters.out.sql.SqlStartupPool;
 import com.markettec.users.adapters.out.sql.SqlStartupRetry;
 import com.markettec.users.adapters.out.sql.SqlUserStore;
 import com.markettec.users.adapters.out.sql.SqlSessionRepository;
@@ -26,7 +27,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 
 import javax.sql.DataSource;
+import java.lang.management.ManagementFactory;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Clock;
 import java.security.SecureRandom;
 
@@ -53,8 +56,9 @@ public class SqlUserConfig {
                 ? AzureSqlConnection.managedIdentityDataSource(server, database, port)
                 : AzureSqlConnection.dataSource(server, database, port));
         config.setPoolName("users-sql");
-        config.setMaximumPoolSize(poolSize);
-        config.setMinimumIdle(0);
+        // MTEC-37: exactly one connection until the schema validation in sqlUserStore completes; the runtime shape
+        // (maximum poolSize, minimumIdle 0) is restored there, before HTTP opens.
+        SqlStartupPool.configureForStartup(config);
         config.setIdleTimeout(60000);
         config.setMaxLifetime(600000);
         config.setKeepaliveTime(0);
@@ -62,7 +66,9 @@ public class SqlUserConfig {
         // MTEC-37: Hikari still fails fast (one connection attempt per pool construction). A transient failure of
         // that first connection — a serverless database resuming from auto-pause — is retried here, bounded, instead
         // of exiting the JVM and waiting for a container restart. Nothing serves HTTP until this bean completes.
-        return SqlStartupRetry.run(SqlStartupRetry.Policy.AZURE_SQL_RESUME, () -> new HikariDataSource(config));
+        // The budget is charged from JVM start, since that is when the Startup probe window begins.
+        return SqlStartupRetry.run(SqlStartupRetry.Policy.AZURE_SQL_RESUME,
+                Duration.ofMillis(ManagementFactory.getRuntimeMXBean().getUptime()), () -> new HikariDataSource(config));
     }
 
     @Bean
@@ -70,7 +76,11 @@ public class SqlUserConfig {
         if (environment.acceptsProfiles(Profiles.of("local", "in-memory"))) {
             throw new IllegalStateException("Select exactly one persistence profile");
         }
+        // Runs over the single connection the pool kept from its fail-fast check: no second login after a resume.
         SqlSchemaValidator.validate(source, environment.getRequiredProperty("users.sql.database"));
+        if (!environment.acceptsProfiles(Profiles.of("sql-integration"))) {
+            SqlStartupPool.startupComplete(source, environment.getRequiredProperty("users.sql.maximum-pool-size", Integer.class));
+        }
         return new SqlUserStore(new JdbcTemplate(source), new DataSourceTransactionManager(source));
     }
 
