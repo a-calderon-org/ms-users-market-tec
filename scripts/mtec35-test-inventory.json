@@ -1,5 +1,5 @@
 {
-  "normal_count": 507,
+  "normal_count": 508,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -77,7 +77,8 @@
     "startupPoolRunsFlywayAndSchemaValidationOverTheSingleFailFastConnection",
     "swallowedProfileInsertFailureStillRollsBackTheUserRow",
     "unapprovedLinkDoesNotWriteAnything",
-    "updatesOnlyTheProfileDetailsAndIncrementsVersion"
+    "updatesOnlyTheProfileDetailsAndIncrementsVersion",
+    "restrictedRuntimePasswordFlowNeedsNoDeleteOrDdlPermission"
   ],
   "required_normal_methods": {
     "com.markettec.users.application.session.InstitutionalEmailProofTest": [
@@ -419,6 +420,9 @@
     ],
     "com.markettec.users.config.PasswordAuthConfigTest": [
       "recoveryNeedsBothThePasswordFeatureAndItsOwnLinkUrl"
+    ],
+    "com.markettec.users.architecture.RuntimeSqlPrivilegeTest": [
+      "runtimeSqlAdaptersNeedNoPrivilegeBeyondSelectInsertUpdate"
     ]
   }
 }
