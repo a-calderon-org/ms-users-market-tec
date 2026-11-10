@@ -41,11 +41,29 @@ public final class EmailLoginService {
     private final InstitutionalLinkSender sender;
     private final Clock clock;
     private final SecureRandom random;
+    /** Optional password feature: both null when passwords are disabled, which keeps the plain Magic Link flow. */
+    private final PasswordCredentialRepository credentials;
+    private final PasswordSetupGrantRepository grants;
+    /** Optional: delivers recovery links (its own link base); null means recovery is unavailable. */
+    private final InstitutionalLinkSender recoverySender;
 
     public EmailLoginService(EmailLoginAttemptRepository attempts, UserTransactions tx, UserRepository users,
             ExternalIdentityRepository identities, PendingGoogleRegistrationRepository emails,
             UserIdGenerator ids, SessionAuthority sessions, InternalTokenIssuer jwt,
             InstitutionalLinkSender sender, Clock clock, SecureRandom random) {
+        this(attempts, tx, users, identities, emails, ids, sessions, jwt, sender, clock, random, null, null, null);
+    }
+
+    public EmailLoginService(EmailLoginAttemptRepository attempts, UserTransactions tx, UserRepository users,
+            ExternalIdentityRepository identities, PendingGoogleRegistrationRepository emails,
+            UserIdGenerator ids, SessionAuthority sessions, InternalTokenIssuer jwt,
+            InstitutionalLinkSender sender, Clock clock, SecureRandom random,
+            PasswordCredentialRepository credentials, PasswordSetupGrantRepository grants,
+            InstitutionalLinkSender recoverySender) {
+        if ((credentials == null) != (grants == null)) throw new IllegalArgumentException("Password feature is all or nothing");
+        this.credentials = credentials;
+        this.grants = grants;
+        this.recoverySender = recoverySender;
         this.attempts = Objects.requireNonNull(attempts);
         this.tx = Objects.requireNonNull(tx);
         this.users = Objects.requireNonNull(users);
@@ -65,20 +83,46 @@ public final class EmailLoginService {
      * so callers cannot learn anything about accounts or rate state. Non-institutional domains are rejected.
      */
     public String request(Email email) {
+        return request(email, EmailLoginAttempt.Purpose.LOGIN);
+    }
+
+    /** Whether password recovery links can be delivered at all (configuration, not account state). */
+    public boolean recoveryAvailable() { return recoverySender != null && credentials != null; }
+
+    /**
+     * A recovery link is only sent for an existing, active institutional identity; for any other address the
+     * request is acknowledged identically and nothing is sent or stored. The link proves control of the mailbox
+     * and nothing more: see {@link #confirm} for what it may and may not do.
+     */
+    public String requestRecovery(Email email) {
+        if (!recoveryAvailable()) throw new IllegalStateException("Password recovery is not configured");
+        return request(email, EmailLoginAttempt.Purpose.RECOVERY);
+    }
+
+    private String request(Email email, EmailLoginAttempt.Purpose purpose) {
         if (!InstitutionalEmailProof.eligible(email)) throw new SessionRejectedException();
         Instant now = now();
         String browser = randomHex(32);
         String[] issued = tx.execute(() -> {
             if (attempts.countSince(email.normalized(), now.minus(THROTTLE_WINDOW)) >= MAX_REQUESTS_PER_WINDOW)
                 return null;
+            if (purpose == EmailLoginAttempt.Purpose.RECOVERY && !recoverable(email)) return null;
             String id = randomHex(16);
             String secret = randomHex(32);
             attempts.insert(new EmailLoginAttempt(id, email, digest(email, id, secret), sha256(browser),
-                    now, now.plus(TTL), 0, false, 0));
+                    now, now.plus(TTL), 0, false, 0, purpose));
             return new String[]{id, secret};
         });
-        if (issued != null) sender.send(email, issued[0], issued[1]);
+        if (issued != null)
+            (purpose == EmailLoginAttempt.Purpose.RECOVERY ? recoverySender : sender).send(email, issued[0], issued[1]);
         return browser;
+    }
+
+    private boolean recoverable(Email email) {
+        var link = identities.findByKey(new ExternalIdentityKey(ISSUER, email.normalized())).orElse(null);
+        if (link == null || link.provider() != IdentityProvider.INSTITUTIONAL_EMAIL
+                || link.status() != IdentityLinkStatus.ACTIVE) return false;
+        return users.findById(link.userId()).map(u -> u.status() == AccountStatus.ACTIVE).orElse(false);
     }
 
     private enum Kind { OK, CONSUMED, EXPIRED, REJECTED, CONTINUITY }
@@ -91,6 +135,8 @@ public final class EmailLoginService {
      *   <li>Existing institutional identity (exact issuer/address key): a new session for the same user.</li>
      *   <li>Address owned only by another account (e.g. Google): never merged on address equality; the link
      *       is spent and CONTINUITY_REQUIRED is returned without credentials.</li>
+     *   <li>Recovery links ({@code RECOVERY}) never create accounts and never sign in an account that already
+     *       has a password: CONTINUITY_REQUIRED, link spent.</li>
      * </ul>
      * The profile-address range lock is taken before the identity lookup, so concurrent first confirmations
      * for one address serialize: the loser observes the winner's identity and signs in to the same user.
@@ -123,11 +169,18 @@ public final class EmailLoginService {
                 if (linked.provider() != IdentityProvider.INSTITUTIONAL_EMAIL
                         || linked.status() != IdentityLinkStatus.ACTIVE)
                     return new Outcome(Kind.REJECTED, null);
-                return new Outcome(Kind.OK, issue(new VerifiedExternalIdentity(
-                        IdentityProvider.INSTITUTIONAL_EMAIL, key, email)));
+                // B02: control of the mailbox does not prove continuity of an account that already holds a
+                // password (the address may have been reassigned). A recovery link must never replace or bypass
+                // that credential; the link is spent and nothing is issued.
+                if (attempt.purpose() == EmailLoginAttempt.Purpose.RECOVERY && hasPassword(linked.userId()))
+                    return new Outcome(Kind.CONTINUITY, null);
+                return new Outcome(Kind.OK, withSetupGrant(issue(new VerifiedExternalIdentity(
+                        IdentityProvider.INSTITUTIONAL_EMAIL, key, email)), now));
             }
+            // Recovery never creates accounts: registration is the ordinary link.
+            if (attempt.purpose() == EmailLoginAttempt.Purpose.RECOVERY) return new Outcome(Kind.REJECTED, null);
             if (addressInUse) return new Outcome(Kind.CONTINUITY, null);
-            return new Outcome(Kind.OK, createAndIssue(email, key, now));
+            return new Outcome(Kind.OK, withSetupGrant(createAndIssue(email, key, now), now));
         });
         return switch (outcome.kind()) {
             case OK -> outcome.result();
@@ -136,6 +189,21 @@ public final class EmailLoginService {
             case CONTINUITY -> throw new SessionRejectedException(SessionRejectedException.Reason.CONTINUITY_REQUIRED);
             case REJECTED -> throw new SessionRejectedException();
         };
+    }
+
+    private boolean hasPassword(UserId userId) {
+        return credentials != null && credentials.findLocked(userId).isPresent();
+    }
+
+    /**
+     * A confirmed link for an account with no password authorizes setting its first password from this very
+     * session, once, for a short time. Accounts that already have one get no grant (replacing it needs the
+     * current password, or a continuity proof that is not approved yet).
+     */
+    private GoogleLoginService.Result withSetupGrant(GoogleLoginService.Result result, Instant now) {
+        if (grants != null && !hasPassword(new UserId(result.userId())))
+            grants.issue(result.sessionId(), new UserId(result.userId()), now, now.plus(PasswordCredentialService.SETUP_GRANT_TTL));
+        return result;
     }
 
     private GoogleLoginService.Result createAndIssue(Email email, ExternalIdentityKey key, Instant now) {

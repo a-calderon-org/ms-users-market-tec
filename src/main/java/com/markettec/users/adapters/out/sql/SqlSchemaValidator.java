@@ -20,13 +20,18 @@ public final class SqlSchemaValidator {
         }
         Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true)
                 .baselineOnMigrate(false).load().validate();
-        Map<String, List<String>> primaryKeys = Map.of("users", List.of("user_id"),
-                "profiles", List.of("user_id"), "external_identities", List.of("issuer_hash", "subject_hash"),
-                "sessions", List.of("session_id"),
-                "session_credential_generations", List.of("session_id", "generation"),
-                "recent_authentication_attempts", List.of("attempt_id"),
-                "google_login_intents", List.of("attempt_id"),
-                "pending_google_registrations", List.of("attempt_id"));
+        Map<String, List<String>> primaryKeys = Map.ofEntries(
+                Map.entry("users", List.of("user_id")),
+                Map.entry("profiles", List.of("user_id")),
+                Map.entry("external_identities", List.of("issuer_hash", "subject_hash")),
+                Map.entry("sessions", List.of("session_id")),
+                Map.entry("session_credential_generations", List.of("session_id", "generation")),
+                Map.entry("recent_authentication_attempts", List.of("attempt_id")),
+                Map.entry("google_login_intents", List.of("attempt_id")),
+                Map.entry("pending_google_registrations", List.of("attempt_id")),
+                Map.entry("password_credentials", List.of("user_id")),
+                Map.entry("password_setup_grants", List.of("session_id")),
+                Map.entry("password_attempt_throttle", List.of("key_hash")));
         primaryKeys.forEach((table, expected) -> {
             var actual = jdbc.queryForList("""
                     SELECT c.name FROM sys.indexes i
@@ -109,7 +114,9 @@ public final class SqlSchemaValidator {
                 WHERE c.object_id IN (OBJECT_ID('dbo.users'), OBJECT_ID('dbo.profiles'),
                     OBJECT_ID('dbo.external_identities'), OBJECT_ID('dbo.sessions'),
                     OBJECT_ID('dbo.recent_authentication_attempts'), OBJECT_ID('dbo.google_login_intents'),
-                        OBJECT_ID('dbo.session_credential_generations'), OBJECT_ID('dbo.pending_google_registrations'))
+                        OBJECT_ID('dbo.session_credential_generations'), OBJECT_ID('dbo.pending_google_registrations'),
+                        OBJECT_ID('dbo.password_credentials'), OBJECT_ID('dbo.password_setup_grants'),
+                        OBJECT_ID('dbo.password_attempt_throttle'), OBJECT_ID('dbo.email_login_attempts'))
                 """, (rs, row) -> Map.entry(rs.getString("table_name") + "." + rs.getString("name"),
                 rs.getString("type_name") + ":" + rs.getInt("max_length") + ":" + rs.getBoolean("is_nullable")))
                 .stream().collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
@@ -179,6 +186,17 @@ public final class SqlSchemaValidator {
         require(columns, "pending_google_registrations.expires_ms", "bigint:8:false");
         require(columns, "pending_google_registrations.state", "varchar:16:false");
         require(columns, "pending_google_registrations.version", "bigint:8:false");
+        require(columns, "password_credentials.user_id", "varchar:40:false");
+        require(columns, "password_credentials.password_hash", "varchar:255:false");
+        require(columns, "password_credentials.hash_version", "int:4:false");
+        for (String name : List.of("created_ms", "updated_ms", "version"))
+            require(columns, "password_credentials." + name, "bigint:8:false");
+        require(columns, "password_setup_grants.session_id", "char:32:false");
+        require(columns, "password_setup_grants.user_id", "varchar:40:false");
+        require(columns, "password_setup_grants.consumed", "bit:1:false");
+        require(columns, "password_attempt_throttle.key_hash", "char:64:false");
+        require(columns, "password_attempt_throttle.failures", "int:4:false");
+        require(columns, "email_login_attempts.purpose", "varchar:16:false");
         var hashes = jdbc.queryForList("""
                 SELECT name FROM sys.computed_columns WHERE object_id=OBJECT_ID('dbo.external_identities')
                     AND is_persisted=1 AND LOWER(definition) LIKE '%hashbytes%sha2_256%'

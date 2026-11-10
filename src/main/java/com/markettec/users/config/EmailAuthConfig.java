@@ -4,6 +4,8 @@ import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.jwt.InternalJwtService;
 import com.markettec.users.adapters.out.mail.HttpEmailLinkSender;
 import com.markettec.users.adapters.out.sql.SqlEmailLoginAttemptRepository;
+import com.markettec.users.adapters.out.sql.SqlPasswordCredentialRepository;
+import com.markettec.users.adapters.out.sql.SqlPasswordSetupGrantRepository;
 import com.markettec.users.adapters.out.sql.SqlPendingGoogleRegistrationRepository;
 import com.markettec.users.adapters.out.sql.SqlUserStore;
 import com.markettec.users.application.session.EmailLoginService;
@@ -14,6 +16,7 @@ import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
@@ -63,12 +66,36 @@ public class EmailAuthConfig {
                 "Usa este enlace para confirmar la operación. Vence en 5 minutos y solo funciona una vez:", "proof");
     }
 
+    /** Recovery links point at their own page; without this URL, recovery requests answer 503. */
+    @Bean
+    @Qualifier("recoveryLinkSender")
+    @ConditionalOnExpression("!'${users.email.recovery-link-base-url:}'.isBlank()")
+    InstitutionalLinkSender recoveryLinkSender(
+            @Value("${users.email.provider.endpoint:}") String endpoint,
+            @Value("${users.email.provider.api-key:}") String apiKey,
+            @Value("${users.email.from:}") String from,
+            @Value("${users.email.recovery-link-base-url:}") String linkBase) {
+        return new HttpEmailLinkSender(client(), endpoint, apiKey, from, linkBase,
+                "Recupera el acceso a MarketTec",
+                "Usa este enlace para recuperar el acceso. Vence en 10 minutos y solo funciona una vez:", "recovery");
+    }
+
     @Bean
     EmailLoginService emailLoginService(SqlEmailLoginAttemptRepository attempts, SqlUserStore store,
             SqlPendingGoogleRegistrationRepository emails, SessionAuthority sessions, InternalJwtService jwt,
-            @Qualifier("loginLinkSender") InstitutionalLinkSender sender, Clock clock) {
+            @Qualifier("loginLinkSender") InstitutionalLinkSender sender, Clock clock,
+            ObjectProvider<SqlPasswordCredentialRepository> credentials,
+            ObjectProvider<SqlPasswordSetupGrantRepository> grants,
+            @Qualifier("recoveryLinkSender") ObjectProvider<InstitutionalLinkSender> recoverySender) {
+        // Password features are all-or-nothing: without users.password.enabled the plain Magic Link flow is unchanged.
+        var passwordRepo = credentials.getIfAvailable();
+        var grantRepo = grants.getIfAvailable();
+        if (passwordRepo == null || grantRepo == null)
+            return new EmailLoginService(attempts, store, store, store, emails, new UuidUserIdGenerator(),
+                    sessions, jwt, sender, clock, new SecureRandom());
         return new EmailLoginService(attempts, store, store, store, emails, new UuidUserIdGenerator(),
-                sessions, jwt, sender, clock, new SecureRandom());
+                sessions, jwt, sender, clock, new SecureRandom(), passwordRepo, grantRepo,
+                recoverySender.getIfAvailable());
     }
 
     private static HttpClient client() {

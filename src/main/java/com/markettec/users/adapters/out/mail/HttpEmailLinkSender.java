@@ -35,7 +35,7 @@ import org.slf4j.LoggerFactory;
  * logged, so a silent provider failure is observable without exposing credentials or addresses.
  */
 public final class HttpEmailLinkSender implements InstitutionalLinkSender {
-    public static final Set<String> CHANNELS = Set.of("login", "proof");
+    public static final Set<String> CHANNELS = Set.of("login", "proof", "recovery");
     private static final Logger LOG = LoggerFactory.getLogger(HttpEmailLinkSender.class);
     private static final ObjectMapper JSON = new ObjectMapper();
     private final HttpClient client;

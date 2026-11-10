@@ -1,5 +1,5 @@
 {
-  "normal_count": 443,
+  "normal_count": 498,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -29,6 +29,7 @@
     "failedSqlRefreshRollsBackVerifierAndSessionDeadline",
     "flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum",
     "flywayUpgradesAppliedV12ToV13WithoutTouchingTheV12ChecksumAndInvalidatesLegacyLinks",
+    "flywayUpgradesAppliedV13ToV14KeepingEveryExistingRowAndDefaultingLinksToLogin",
     "googleLoginIntentIsAtomicAcrossConcurrentSqlExchangesAndRollback",
     "googleLoginRequiresActivePersistedLinkAndAccount",
     "identityCollisionKeepsTheOriginalOwnerAndRollsBackBothProofs",
@@ -44,6 +45,10 @@
     "missingIdsAndIdentitiesReturnEmpty",
     "nestedUnitRollsBackToSavepointWithoutLosingOuterWrites",
     "opaqueRefreshRotatesOnceAcrossConcurrentSqlTransactionsAndRevocation",
+    "passwordRepositoriesEnforceKeysConstraintsOptimisticVersionsAndSingleUseGrants",
+    "passwordSetupLoginAndChangeRunAtomicallyInSqlWithoutDuplicatesOrPlaintext",
+    "passwordThrottleIsUniformForUnknownAddressesAndSharedAcrossInstancesInSql",
+    "passwordsNeverLinkOrDuplicateAGoogleOwnedAddressInSql",
     "persistsAndFindsEveryUserAndProfileFieldLosslessly",
     "proofExpiringBeforeTheInsertCommitsNothing",
     "realDeadlockRollsBackAndRetriesTheCompleteUnit",
@@ -53,6 +58,7 @@
     "recentProofCommitsOnceWithSensitiveMutation",
     "recentProofSerializesWithRevocation",
     "recoversInformationAfterSpringContextRestart",
+    "recoveryPreservesTheUserIdWithoutAPasswordAndNeverReplacesOneInSql",
     "registersAndFindsIdentityAndKeepsOriginalEvidenceOnRetry",
     "rejectsOwnerAndProviderConflictsWithoutReassignment",
     "restrictedRuntimeCanRotateRefreshWithoutDeleteOrDdlPermissions",

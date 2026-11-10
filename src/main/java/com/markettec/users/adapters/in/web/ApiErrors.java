@@ -3,6 +3,7 @@ package com.markettec.users.adapters.in.web;
 import com.markettec.users.adapters.out.google.InvalidGoogleTokenException;
 import com.markettec.users.adapters.out.jwt.InternalJwtService.InvalidInternalJwtException;
 import com.markettec.users.application.session.EmailDeliveryException;
+import com.markettec.users.application.session.PasswordOperationException;
 import com.markettec.users.application.session.SessionRejectedException;
 import com.markettec.users.domain.model.UserDomainException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -50,6 +51,24 @@ final class ApiErrors {
                     of(HttpStatus.CONFLICT, "IDENTITY_CONFLICT", request, clock);
             case CONCURRENT_MODIFICATION -> of(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION", request, clock);
         };
+        if (failure instanceof PasswordOperationException password) {
+            var response = switch (password.code()) {
+                case WEAK_PASSWORD -> of(HttpStatus.UNPROCESSABLE_ENTITY, "WEAK_PASSWORD", request, clock);
+                case PASSWORD_ALREADY_SET -> of(HttpStatus.CONFLICT, "PASSWORD_ALREADY_SET", request, clock);
+                case PASSWORD_NOT_SET -> of(HttpStatus.CONFLICT, "PASSWORD_NOT_SET", request, clock);
+                case SETUP_NOT_AUTHORIZED -> of(HttpStatus.FORBIDDEN, "PASSWORD_SETUP_NOT_AUTHORIZED", request, clock);
+                case INVALID_CREDENTIALS -> of(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", request, clock);
+                case THROTTLED -> of(HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMITED", request, clock);
+                case UNAVAILABLE -> of(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE", request, clock);
+            };
+            if (password.code() == PasswordOperationException.Code.THROTTLED) {
+                var headers = new HttpHeaders();
+                headers.putAll(response.getHeaders());
+                headers.set(HttpHeaders.RETRY_AFTER, Long.toString(Math.max(1, password.retryAfterSeconds())));
+                return ResponseEntity.status(response.getStatusCode()).headers(headers).body(response.getBody());
+            }
+            return response;
+        }
         if (failure instanceof EmailDeliveryException)
             return of(HttpStatus.SERVICE_UNAVAILABLE, "AUTH_TEMPORARILY_UNAVAILABLE", request, clock);
         if (failure instanceof IllegalArgumentException)

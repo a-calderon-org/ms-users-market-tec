@@ -34,6 +34,7 @@ public final class ProtectedApiCorsFilter extends OncePerRequestFilter {
     static List<String> methods(String path) {
         if (path.equals("/v1/me/profile") || USER.matcher(path).matches()) return List.of("GET", "PUT");
         if (path.equals("/v1/me/auth-methods")) return List.of("GET", "POST");
+        if (path.equals("/v1/me/password")) return List.of("GET", "POST", "PUT");
         return switch (path) {
             case "/v1/auth/session/activity", "/v1/auth/proofs/attempts", "/v1/auth/proofs/google",
                  "/v1/auth/proofs/email/requests", "/v1/auth/proofs/email/confirm" -> List.of("POST");

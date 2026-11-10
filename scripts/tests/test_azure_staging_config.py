@@ -58,7 +58,7 @@ class AzureStagingConfigTest(unittest.TestCase):
 
     def test_every_default_false_flag_is_explicitly_false(self):
         flags = set(re.findall(r"\$\{(USERS_[A-Z_]+):false\}", APPLICATION_YML))
-        self.assertEqual(14, len(flags), flags)
+        self.assertEqual(15, len(flags), flags)
         for flag in flags:
             self.assertEqual("false", TEMPLATE.get(flag), flag)
         self.assertEqual(flags, {name for name, value in TEMPLATE.items() if value == "false"})
