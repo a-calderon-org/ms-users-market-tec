@@ -4,6 +4,7 @@ import com.markettec.users.adapters.in.web.PasswordApiController;
 import com.markettec.users.adapters.in.web.PasswordAuthController;
 import com.markettec.users.adapters.in.web.PublicAuthRateLimitFilter;
 import com.markettec.users.adapters.out.jwt.InternalJwtService;
+import com.markettec.users.adapters.out.mail.DetachedLinkSender;
 import com.markettec.users.adapters.out.sql.SqlPendingGoogleRegistrationRepository;
 import com.markettec.users.adapters.out.sql.SqlUserStore;
 import com.markettec.users.application.ports.in.VerifiedInternalToken;
@@ -81,6 +82,7 @@ class PasswordAuthConfigTest {
             assertThat(context).hasNotFailed();
             assertThat(context.getBean(EmailLoginService.class).recoveryAvailable()).isTrue();
             assertThat(context).getBeans(InstitutionalLinkSender.class).containsOnlyKeys("loginLinkSender", "recoveryLinkSender");
+            assertThat(context.getBean("recoveryLinkSender")).isInstanceOf(DetachedLinkSender.class);
         });
     }
 
