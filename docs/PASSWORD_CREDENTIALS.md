@@ -38,6 +38,32 @@ Hash: concurrencia acotada (`USERS_PASSWORD_HASH_MAX_CONCURRENT`, por defecto 4;
 * Contraseña: 10–128 puntos de código, sin caracteres de control, ≥4 distintos, no común ni derivada de la dirección → `422 WEAK_PASSWORD`.
 * Rutas anónimas: límite por instancia/minuto (`PublicAuthRateLimitFilter`).
 
+## Entrega de enlaces de recuperación (acuse uniforme y limitaciones)
+
+Un enlace de recuperación solo se genera para una identidad institucional activa. Para no revelar si la cuenta existe, la
+respuesta es siempre `202` con la misma cookie de intento y no depende del proveedor de correo:
+
+* El envío se ejecuta fuera del hilo de la petición (`DetachedLinkSender`: 1 worker, cola en memoria de 64). La respuesta no espera
+  al proveedor y un fallo de entrega no altera el `202` (`EmailLoginService` también absorbe `EmailDeliveryException` en `RECOVERY`).
+  El enlace de acceso Magic Link (`LOGIN`) sigue siendo síncrono: se envía a cualquier dirección elegible y no revela nada.
+
+Limitaciones aceptadas (entrega *best effort*, sin infraestructura de mensajería):
+
+| Situación | Efecto | Evento `email_delivery_audit` (`channel=recovery`) |
+| --- | --- | --- |
+| Cola llena (proveedor lento y ráfaga) | Enlace descartado, sin reintento | `outcome=dropped_queue_full`, `count` |
+| Espera en cola > 2 min | Descartado: no se entrega un enlace casi vencido (vigencia 10 min; 64 × 10 s de plazo del proveedor superaría la vigencia) | `outcome=dropped_stale`, `queueWaitMs` |
+| Reinicio, escalado a cero o despliegue | La cola se drena hasta 5 s; el resto se pierde | `outcome=dropped_shutdown`, `count` |
+| Proveedor rechaza o vence el plazo | Sin reintento (como en el resto de canales) | evento del adaptador HTTP (`outcome`, `providerStatus`) |
+| Error inesperado del adaptador | Sin reintento | `outcome=sender_error`, `errorType` (solo el tipo) |
+
+Ningún evento incluye destinatario, id de intento, enlace, secreto ni mensaje de excepción. Un enlace perdido no se notifica al
+usuario (ya recibió `202`): puede volver a solicitarlo, dentro del límite de 3 solicitudes por dirección cada 15 minutos.
+
+Diferencia residual entre cuenta existente e inexistente: una cuenta existente añade la inserción del intento en la misma transacción
+(del orden de milisegundos, frente a la ida y vuelta al proveedor que se esperaba antes). Estado, cuerpo, cookies y cabeceras son
+idénticos; el límite por dirección se aplica en silencio y tampoco se distingue.
+
 ## Sesiones al cambiar la contraseña
 
 Cambiar la contraseña **revoca todas las demás sesiones** de la cuenta y conserva la actual. Los JWT de acceso ya emitidos no se
@@ -77,6 +103,6 @@ de esquema al arrancar falla cerrada si falta.
 ## Pruebas
 
 * Unitarias (sin base de datos): `PasswordPolicyTest`, `Argon2idPasswordHasherTest`, `PasswordCredentialServiceTest`,
-  `PasswordIdentityContinuityTest` (B02), `PasswordAuthControllerTest`, `PasswordApiControllerTest`, `PasswordAuthConfigTest`.
+  `PasswordIdentityContinuityTest` (B02), `DetachedLinkSenderTest`, `PasswordAuthControllerTest`, `PasswordApiControllerTest`, `PasswordAuthConfigTest`.
 * Integración SQL (SQL Server real en CI, solo Linux x86-64): `SqlUserStoreIT` — migración V13→V14 sobre esquema existente,
   repositorios, flujo registro→contraseña→login→cambio, recuperación/continuidad, Google y limitación compartida entre instancias.

@@ -39,6 +39,11 @@ public class EmailAuthConfig {
     private static final String SUBJECT = "Tu enlace de acceso a MarketTec";
     /** Pending recovery deliveries; requests are already capped per address (3/15 min) and per route (30/min). */
     static final int RECOVERY_QUEUE = 64;
+    /**
+     * A recovery link lives 10 minutes; one that waited longer than this is dropped rather than delivered with
+     * little validity left (64 queued x 10 s provider deadline could otherwise exceed the whole lifetime).
+     */
+    static final Duration RECOVERY_MAX_QUEUE_AGE = Duration.ofMinutes(2);
 
     @Bean
     SqlEmailLoginAttemptRepository sqlEmailLoginAttemptRepository(DataSource source) {
@@ -73,7 +78,7 @@ public class EmailAuthConfig {
     @Bean
     @Qualifier("recoveryLinkSender")
     @ConditionalOnExpression("!'${users.email.recovery-link-base-url:}'.isBlank()")
-    InstitutionalLinkSender recoveryLinkSender(
+    InstitutionalLinkSender recoveryLinkSender(Clock clock,
             @Value("${users.email.provider.endpoint:}") String endpoint,
             @Value("${users.email.provider.api-key:}") String apiKey,
             @Value("${users.email.from:}") String from,
@@ -82,7 +87,7 @@ public class EmailAuthConfig {
         return new DetachedLinkSender(new HttpEmailLinkSender(client(), endpoint, apiKey, from, linkBase,
                 "Recupera el acceso a MarketTec",
                 "Usa este enlace para recuperar el acceso. Vence en 10 minutos y solo funciona una vez:", "recovery"),
-                "recovery", RECOVERY_QUEUE);
+                "recovery", RECOVERY_QUEUE, RECOVERY_MAX_QUEUE_AGE, clock);
     }
 
     @Bean

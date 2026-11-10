@@ -1,5 +1,5 @@
 {
-  "normal_count": 498,
+  "normal_count": 507,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -403,6 +403,22 @@
       "windowResetsAfterOneMinute",
       "routesHaveIndependentBudgetsAndOtherRequestsAreNeverCounted",
       "defaultLimitsCoverEveryAnonymousAuthRoute"
+    ],
+    "com.markettec.users.adapters.out.mail.DetachedLinkSenderTest": [
+      "aFullQueueDropsInsteadOfBlockingOrFailingAndIsAudited",
+      "aLinkThatWaitedTooLongIsDroppedInsteadOfArrivingNearlyExpired",
+      "aProviderFailureNeitherPropagatesNorStopsLaterDeliveries",
+      "anUnexpectedSenderErrorIsLoggedByTypeOnly",
+      "noEventEverCarriesTheRecipientAttemptOrSecret",
+      "rejectsInvalidBounds",
+      "returnsBeforeTheProviderAnswers",
+      "sendingAfterShutdownIsDroppedAndAudited"
+    ],
+    "com.markettec.users.application.session.PasswordIdentityContinuityTest": [
+      "aRecoveryDeliveryFailureIsAcknowledgedLikeAnUnknownAddress"
+    ],
+    "com.markettec.users.config.PasswordAuthConfigTest": [
+      "recoveryNeedsBothThePasswordFeatureAndItsOwnLinkUrl"
     ]
   }
 }
