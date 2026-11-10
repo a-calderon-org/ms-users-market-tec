@@ -635,9 +635,9 @@ class SqlUserStoreIT {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
         assertEquals("14", flyway.info().current().getVersion().getVersion());
-        assertEquals(13, flyway.info().applied().length);
+        assertEquals(14, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
-        assertEquals(13, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
+        assertEquals(14, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
         assertEquals(1, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM dbo.flyway_schema_history
                 WHERE [version]='1' AND script='V1__initial_users_schema.sql' AND success=1 AND checksum IS NOT NULL
