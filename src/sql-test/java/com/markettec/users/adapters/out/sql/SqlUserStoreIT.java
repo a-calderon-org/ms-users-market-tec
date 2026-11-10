@@ -634,7 +634,7 @@ class SqlUserStoreIT {
     void flywayHistoryRecordsExactlyOneSuccessfulV1AndValidatesItsChecksum() {
         var flyway = Flyway.configure().dataSource(source).defaultSchema("dbo").cleanDisabled(true).load();
         flyway.validate();
-        assertEquals("13", flyway.info().current().getVersion().getVersion());
+        assertEquals("14", flyway.info().current().getVersion().getVersion());
         assertEquals(13, flyway.info().applied().length);
         assertEquals(0, flyway.info().pending().length);
         assertEquals(13, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.flyway_schema_history", Integer.class));
@@ -2430,9 +2430,9 @@ class SqlUserStoreIT {
         var credential = new PasswordCredential(owner.userId(), "$argon2id$v=19$m=19456,t=2,p=1$salt$hash", 1, now, now, 0);
         assertThrows(UserPersistenceException.class, () -> credentials.insert(credential), "a transaction is required");
         store.execute(() -> { credentials.insert(credential); return null; });
-        assertThrows(DataIntegrityViolationException.class, () -> store.execute(() -> { credentials.insert(credential); return null; }));
+        assertThrows(UserPersistenceException.class, () -> store.execute(() -> { credentials.insert(credential); return null; }), "one credential per user");
         var other = new PasswordCredential(new UserId("usr_00000000-0000-4000-8000-0000000000cc"), "$argon2id$x", 1, now, now, 0);
-        assertThrows(DataIntegrityViolationException.class, () -> store.execute(() -> { credentials.insert(other); return null; }));
+        assertThrows(UserPersistenceException.class, () -> store.execute(() -> { credentials.insert(other); return null; }), "foreign key to users");
         store.execute(() -> {
             var loaded = credentials.findLocked(owner.userId()).orElseThrow();
             assertEquals(credential, loaded);
@@ -2453,9 +2453,9 @@ class SqlUserStoreIT {
         var session = authority.create(new VerifiedExternalIdentity(IdentityProvider.INSTITUTIONAL_EMAIL,
                 new ExternalIdentityKey(EmailLoginService.ISSUER, "pw.repo@estudiantec.cr"), new Email("pw.repo@estudiantec.cr")));
         store.execute(() -> { grants.issue(session.sessionId(), owner.userId(), now, now.plusSeconds(600)); return null; });
-        assertThrows(DataIntegrityViolationException.class, () -> store.execute(() -> {
+        assertThrows(UserPersistenceException.class, () -> store.execute(() -> {
             grants.issue(session.sessionId(), owner.userId(), now, now.plusSeconds(600)); return null; }), "one grant per session");
-        assertThrows(DataIntegrityViolationException.class, () -> store.execute(() -> {
+        assertThrows(UserPersistenceException.class, () -> store.execute(() -> {
             grants.issue("f".repeat(32), owner.userId(), now, now.plusSeconds(600)); return null; }), "needs a real session");
         UserId stranger = new UuidUserIdGenerator().nextId();
         store.execute(() -> {
@@ -2544,7 +2544,7 @@ class SqlUserStoreIT {
         // Sign in later with email and password only: no new link, same userId, a second live session.
         int links = stack.login().size();
         var first = stack.passwords().login(new Email(address), "correct horse battery");
-        var second = stack.passwords().login(new Email("PW.Flow@Estudiantec.cr"), "correct horse battery");
+        var second = stack.passwords().login(new Email("pw.flow@ESTUDIANTEC.cr"), "correct horse battery");
         assertEquals(id.value(), first.userId());
         assertEquals(id.value(), second.userId());
         assertEquals(links, stack.login().size(), "no Magic Link was requested");
@@ -2561,6 +2561,18 @@ class SqlUserStoreIT {
                 "an entirely new passphrase", "yet another passphrase 9"), "revoked sessions cannot act");
         assertEquals(id.value(), stack.passwords().login(new Email(address), "an entirely new passphrase").userId());
         assertThrows(PasswordOperationException.class, () -> stack.passwords().login(new Email(address), "correct horse battery"));
+
+        // B02: a later holder of the mailbox signs in with the ordinary link (existing behaviour: 2nd request for this
+        // address) but gets no setup grant, and can neither set nor replace the historical credential.
+        String hash = jdbc.queryForObject("SELECT password_hash FROM dbo.password_credentials WHERE user_id=?", String.class, id.value());
+        var intruder = viaLink(stack, address);
+        assertEquals(id.value(), intruder.userId());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.password_setup_grants WHERE session_id=?", Integer.class, intruder.sessionId()));
+        assertEquals(PasswordOperationException.Code.PASSWORD_ALREADY_SET, assertThrows(PasswordOperationException.class,
+                () -> stack.passwords().setInitial(intruder.sessionId(), id, "intruder passphrase 1")).code());
+        assertEquals(PasswordOperationException.Code.INVALID_CREDENTIALS, assertThrows(PasswordOperationException.class,
+                () -> stack.passwords().change(intruder.sessionId(), id, "guess guess guess", "intruder passphrase 1")).code());
+        assertEquals(hash, jdbc.queryForObject("SELECT password_hash FROM dbo.password_credentials WHERE user_id=?", String.class, id.value()));
     }
 
     @Test
@@ -2592,13 +2604,6 @@ class SqlUserStoreIT {
                 Integer.class, blockedLink[0]));
         assertEquals(grantsBefore, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.password_setup_grants WHERE user_id=?",
                 Integer.class, id.value()), "a blocked recovery leaves no grant behind");
-
-        // A later holder of the mailbox using the ordinary link signs in (existing behaviour) but gets no grant.
-        var intruder = viaLink(stack, address);
-        assertEquals(id.value(), intruder.userId());
-        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.password_setup_grants WHERE session_id=?", Integer.class, intruder.sessionId()));
-        assertThrows(PasswordOperationException.class, () -> stack.passwords().setInitial(intruder.sessionId(), id, "intruder passphrase 1"));
-        assertEquals(hash, jdbc.queryForObject("SELECT password_hash FROM dbo.password_credentials WHERE user_id=?", String.class, id.value()));
 
         // Unknown address: acknowledged identically, nothing sent or stored.
         int attempts = jdbc.queryForObject("SELECT COUNT(*) FROM dbo.email_login_attempts", Integer.class);
