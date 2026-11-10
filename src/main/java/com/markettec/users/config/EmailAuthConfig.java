@@ -16,6 +16,7 @@ import java.time.Duration;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -24,7 +25,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Magic Link delivery and login. Activated only with {@code users.email.enabled=true}; the provider
- * endpoint, key, sender and link URLs must then all be supplied (startup fails closed otherwise).
+ * endpoint, key, sender and login link URL must then all be supplied (startup fails closed otherwise).
+ * The proof-link sender (auth-method linking, optional for its consumer) exists only when its URL is set.
  */
 @Configuration
 @Profile("sql-dev | sql-appservice | sql-integration")
@@ -50,6 +52,7 @@ public class EmailAuthConfig {
 
     @Bean
     @Qualifier("proofLinkSender")
+    @ConditionalOnExpression("!'${users.email.proof-link-base-url:}'.isBlank()")
     InstitutionalLinkSender proofLinkSender(
             @Value("${users.email.provider.endpoint:}") String endpoint,
             @Value("${users.email.provider.api-key:}") String apiKey,

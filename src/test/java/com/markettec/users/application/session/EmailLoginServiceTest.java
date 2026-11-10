@@ -100,16 +100,36 @@ class EmailLoginServiceTest {
         verify(sessions, times(1)).issue(any(), any());
     }
 
-    @Test void existingLinkedAccountRequiresContinuityAndReceivesNoCredentials() {
+    @Test void secondLinkForTheSameAddressSignsInToTheSameUser() {
         var first = requestLink("ana@tec.ac.cr");
         service.confirm(first[1], browser, first[2]);
+        UserId firstUser = generated;
+        historical = true; // the profile address now exists (as SQL would report)
+        time.set(START.plus(Duration.ofMinutes(20)));
         var second = requestLink("ana@tec.ac.cr");
-        assertEquals(SessionRejectedException.Reason.CONTINUITY_REQUIRED,
-                assertThrows(SessionRejectedException.class, () -> service.confirm(second[1], browser, second[2])).reason());
-        assertEquals(1, issued);
+        var result = service.confirm(second[1], browser, second[2]);
+        assertEquals("jwt", result.jwt());
+        assertEquals(1, issued, "no second account");
+        assertEquals(firstUser, store.findByKey(new ExternalIdentityKey(EmailLoginService.ISSUER, "ana@tec.ac.cr"))
+                .orElseThrow().userId());
         assertTrue(rows.get(second[1]).consumed());
+        var evidence = org.mockito.ArgumentCaptor.forClass(com.markettec.users.application.ports.in.VerifiedExternalIdentity.class);
+        verify(sessions, times(2)).createAuthenticated(evidence.capture());
+        assertEquals(evidence.getAllValues().get(0).key(), evidence.getAllValues().get(1).key());
+        verify(sessions, times(2)).issue(any(), any());
+        assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
+                assertThrows(SessionRejectedException.class, () -> service.confirm(second[1], browser, second[2])).reason());
+    }
+
+    @Test void disabledInstitutionalIdentityIsRejectedWithoutCredentials() {
+        var first = requestLink("ana@tec.ac.cr");
+        service.confirm(first[1], browser, first[2]);
+        var key = new ExternalIdentityKey(EmailLoginService.ISSUER, "ana@tec.ac.cr");
+        var linked = store.findByKey(key).orElseThrow();
+        store.replaceStatus(linked, IdentityLinkStatus.DISABLED);
+        var second = requestLink("ana@tec.ac.cr");
+        assertThrows(SessionRejectedException.class, () -> service.confirm(second[1], browser, second[2]));
         verify(sessions, times(1)).issue(any(), any());
-        verify(sessions, times(1)).createAuthenticated(any());
     }
 
     @Test void foreignBrowsersChangeNothingAndCannotBlockTheLegitimateRedemption() {
@@ -168,6 +188,7 @@ class EmailLoginServiceTest {
         assertThrows(SessionRejectedException.class, () -> service.confirm("bad", browser, a[2]));
     }
 
+    /** A Google-only account with the same address: no automatic link, no session, no new account. */
     @Test void existingAccountWithTheSameAddressIsNeverMerged() {
         historical = true;
         var link = requestLink("ana@tec.ac.cr");

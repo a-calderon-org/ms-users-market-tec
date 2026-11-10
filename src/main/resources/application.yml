@@ -37,6 +37,8 @@ users:
       enabled: ${USERS_AUTH_METHOD_LINKING_ENABLED:false}
   email:
     enabled: ${USERS_EMAIL_ENABLED:false}
+    # Exact HTTPS browser origins for the Magic Link routes; defaults to the Google HTTP origins.
+    allowed-origins: ${USERS_EMAIL_ALLOWED_ORIGINS:${USERS_GOOGLE_HTTP_ALLOWED_ORIGINS:}}
     from: ${USERS_EMAIL_FROM:}
     login-link-base-url: ${USERS_EMAIL_LOGIN_LINK_BASE_URL:}
     proof-link-base-url: ${USERS_EMAIL_PROOF_LINK_BASE_URL:}
