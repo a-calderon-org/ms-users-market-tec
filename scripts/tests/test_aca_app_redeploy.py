@@ -1,4 +1,4 @@
-"""MTEC-37: `ms-users-aca.sh app --sha` on an existing app keeps its tags and its configured probes."""
+"""MTEC-37: `ms-users-aca.sh app --sha` on an existing app keeps its tags, probes, flags and other settings."""
 import json
 import os
 from pathlib import Path
@@ -21,7 +21,9 @@ args = sys.argv[1:]
 with open(os.environ["AZ_LOG"], "a") as log:
     log.write(" ".join(args) + "\\n")
 line = " ".join(args)
-if line.startswith("containerapp show") and "--query id" in line:
+if line.startswith("containerapp show") and os.environ.get("AZ_APP_MISSING") and "--query" not in line:
+    sys.exit(3)
+elif line.startswith("containerapp show") and "--query id" in line:
     print("{APP_ID}")
 elif line.startswith("rest --method get"):
     if os.environ.get("AZ_REST_FAIL"):
@@ -54,13 +56,15 @@ class AcaAppRedeployTest(unittest.TestCase):
         self.template = self.tmp / "template.json"
         self.patch = self.tmp / "patch.json"
 
-    def run_app(self, probes, rest_fail=False, expect_ok=True):
+    def run_app(self, probes, rest_fail=False, expect_ok=True, missing=False):
         self.template.write_text(json.dumps({"properties": {"template": {
             "revisionSuffix": f"r{SHA[:7]}", "containers": [{"name": "ca-ms-users-stg", "probes": probes}]}}}))
         env = {"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "HOME": str(self.tmp),
                "AZ_LOG": str(self.log), "AZ_TEMPLATE": str(self.template), "AZ_PATCH": str(self.patch)}
         if rest_fail:
             env["AZ_REST_FAIL"] = "1"
+        if missing:
+            env["AZ_APP_MISSING"] = "1"
         result = subprocess.run(["bash", str(SCRIPT), "app", "--sha", SHA], capture_output=True, text=True,
                                 env=env, timeout=60)
         if expect_ok:
@@ -74,6 +78,21 @@ class AcaAppRedeployTest(unittest.TestCase):
         updates = [c for c in calls if c.startswith("containerapp update")]
         self.assertEqual(1, len(updates), calls)
         self.assertNotIn("--tags", updates[0])
+
+    def test_update_keeps_existing_flags_and_settings(self):
+        update = next(c for c in self.run_app([TUNED_STARTUP, READINESS, LIVENESS])
+                      if c.startswith("containerapp update"))
+        self.assertNotIn("--replace-env-vars", update)
+        self.assertIn("--set-env-vars", update)
+        self.assertNotIn("_ENABLED=", update)
+        self.assertNotIn("_VERIFIED=", update)
+        self.assertIn(f"--image acrmsusersstg.azurecr.io/ms-users:{SHA}", update)
+
+    def test_new_app_starts_with_every_flag_false(self):
+        create = next(c for c in self.run_app([], missing=True) if c.startswith("containerapp create"))
+        for flag in ("USERS_PASSWORD_ENABLED", "USERS_GOOGLE_LOGIN_ENABLED", "USERS_EMAIL_ENABLED",
+                     "USERS_INTERNAL_JWT_ENABLED"):
+            self.assertIn(f"{flag}=false", create)
 
     def test_sha_tag_is_merged_incrementally_into_existing_tags(self):
         calls = self.run_app([TUNED_STARTUP, READINESS, LIVENESS])
