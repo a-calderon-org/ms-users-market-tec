@@ -9,7 +9,7 @@
 # Usage: scripts/azure/aca/ms-users-aca.sh <step> [--sha <commit>]
 #   infra        create identity, ACR, Log Analytics and the Container Apps environment
 #   image --sha  build linux/amd64 image of a clean checkout of <commit> (CI must be green) and push
-#   app --sha    create/update the container app (flags false, Key Vault ref, probes, scale 0..1)
+#   app --sha    create (flags false) or update (existing flags and settings kept) the container app
 #   sql-access   /32 SQL firewall rules for the app outbound IPs + least-privilege runtime user
 #   verify       HTTPS /health, sensitive routes closed, flags, Key Vault secret reference
 #   email        opt-in Magic Link delivery: Key Vault ref to the mail provider key + USERS_EMAIL_* settings
@@ -101,14 +101,17 @@ case "$STEP" in
     env_args=(SPRING_PROFILES_ACTIVE=sql-appservice "USERS_SQL_SERVER=$SQL_SERVER.database.windows.net"
       "USERS_SQL_DATABASE=$SQL_DB" USERS_SQL_PORT=1433 USERS_SQL_POOL_SIZE=3 "USERS_CSRF_ACTIVE_KID=$CSRF_KID"
       USERS_CSRF_KEYS_JSON=secretref:csrf-keys-json)
-    for f in "${FLAGS[@]}"; do env_args+=("$f=false"); done
     if az containerapp show -g "$RG" -n "$APP" -o none 2>/dev/null; then
+      # Redeploy: set only the settings this step owns. Flags, origins, JWT and email settings already on the app
+      # (enabled by an operator or by the `email` step) are kept; `--replace-env-vars` would silently drop them.
       az containerapp update -g "$RG" -n "$APP" --image "$ACR.azurecr.io/ms-users:$SHA" \
-        --revision-suffix "r${SHA:0:7}" --replace-env-vars "${env_args[@]}" -o none
+        --revision-suffix "r${SHA:0:7}" --set-env-vars "${env_args[@]}" -o none
       # `containerapp update --tags` replaces every tag on the resource; merge only `sha` instead.
       az resource tag --ids "$(az containerapp show -g "$RG" -n "$APP" --query id -o tsv)" \
         --is-incremental --tags "sha=$SHA" -o none
     else
+      # New app: every authentication flag starts false.
+      for f in "${FLAGS[@]}"; do env_args+=("$f=false"); done
       az containerapp create -g "$RG" -n "$APP" --environment "$ENV" --workload-profile-name Consumption \
         --image "$ACR.azurecr.io/ms-users:$SHA" --registry-server "$ACR.azurecr.io" --registry-identity "$id" \
         --user-assigned "$id" --system-assigned \
