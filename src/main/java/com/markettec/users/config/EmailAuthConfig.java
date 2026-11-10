@@ -2,6 +2,7 @@ package com.markettec.users.config;
 
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.jwt.InternalJwtService;
+import com.markettec.users.adapters.out.mail.DetachedLinkSender;
 import com.markettec.users.adapters.out.mail.HttpEmailLinkSender;
 import com.markettec.users.adapters.out.sql.SqlEmailLoginAttemptRepository;
 import com.markettec.users.adapters.out.sql.SqlPasswordCredentialRepository;
@@ -36,6 +37,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @ConditionalOnProperty(prefix = "users.email", name = "enabled", havingValue = "true")
 public class EmailAuthConfig {
     private static final String SUBJECT = "Tu enlace de acceso a MarketTec";
+    /** Pending recovery deliveries; requests are already capped per address (3/15 min) and per route (30/min). */
+    static final int RECOVERY_QUEUE = 64;
 
     @Bean
     SqlEmailLoginAttemptRepository sqlEmailLoginAttemptRepository(DataSource source) {
@@ -75,9 +78,11 @@ public class EmailAuthConfig {
             @Value("${users.email.provider.api-key:}") String apiKey,
             @Value("${users.email.from:}") String from,
             @Value("${users.email.recovery-link-base-url:}") String linkBase) {
-        return new HttpEmailLinkSender(client(), endpoint, apiKey, from, linkBase,
+        // Detached: recovery links go only to existing accounts, so the response must not wait for the provider.
+        return new DetachedLinkSender(new HttpEmailLinkSender(client(), endpoint, apiKey, from, linkBase,
                 "Recupera el acceso a MarketTec",
-                "Usa este enlace para recuperar el acceso. Vence en 10 minutos y solo funciona una vez:", "recovery");
+                "Usa este enlace para recuperar el acceso. Vence en 10 minutos y solo funciona una vez:", "recovery"),
+                "recovery", RECOVERY_QUEUE);
     }
 
     @Bean

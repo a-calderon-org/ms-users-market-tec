@@ -44,6 +44,7 @@ class PasswordIdentityContinuityTest {
     private final AtomicInteger sessionCounter = new AtomicInteger();
     private final AtomicInteger accountsCreated = new AtomicInteger();
     private final AtomicReference<String> lastUser = new AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicBoolean recoveryProviderDown = new java.util.concurrent.atomic.AtomicBoolean();
     private final EmailLoginService email;
     private final PasswordCredentialService passwords;
     private String browser;
@@ -86,7 +87,10 @@ class PasswordIdentityContinuityTest {
                 () -> { accountsCreated.incrementAndGet(); return new UuidUserIdGenerator().nextId(); }, sessions,
                 ignored -> "jwt", (to, id, secret) -> loginMail.add(new String[]{to.address(), id, secret}), clock,
                 new SecureRandom(), credentials, grants,
-                (to, id, secret) -> recoveryMail.add(new String[]{to.address(), id, secret}));
+                (to, id, secret) -> {
+                    if (recoveryProviderDown.get()) throw new EmailDeliveryException();
+                    recoveryMail.add(new String[]{to.address(), id, secret});
+                });
         passwords = new PasswordCredentialService(store, store, store, credentials, grants, throttle, hasher,
                 sessions, ignored -> "jwt", clock);
     }
@@ -234,6 +238,16 @@ class PasswordIdentityContinuityTest {
         }
         assertTrue(recoveryMail.isEmpty(), "nothing is sent");
         assertTrue(rows.isEmpty(), "nothing is stored");
+    }
+
+    @Test void aRecoveryDeliveryFailureIsAcknowledgedLikeAnUnknownAddress() {
+        signInWithLink("ana@estudiantec.cr");
+        recoveryProviderDown.set(true);
+        String known = assertDoesNotThrow(() -> email.requestRecovery(new Email("ana@estudiantec.cr")));
+        String unknown = email.requestRecovery(new Email("ghost@estudiantec.cr"));
+        assertEquals(64, known.length(), "a failed delivery is not reported to the anonymous caller");
+        assertEquals(unknown.length(), known.length());
+        assertTrue(recoveryMail.isEmpty());
     }
 
     // unauthorized recovery attempts ---------------------------------------------------------------------------

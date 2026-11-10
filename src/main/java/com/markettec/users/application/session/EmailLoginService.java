@@ -113,8 +113,17 @@ public final class EmailLoginService {
                     now, now.plus(TTL), 0, false, 0, purpose));
             return new String[]{id, secret};
         });
-        if (issued != null)
-            (purpose == EmailLoginAttempt.Purpose.RECOVERY ? recoverySender : sender).send(email, issued[0], issued[1]);
+        if (issued == null) return browser;
+        if (purpose != EmailLoginAttempt.Purpose.RECOVERY) {
+            sender.send(email, issued[0], issued[1]);
+            return browser;
+        }
+        try {
+            recoverySender.send(email, issued[0], issued[1]);
+        } catch (EmailDeliveryException undelivered) {
+            // Only existing accounts get a recovery link, so a delivery failure must not change the answer:
+            // the request is acknowledged exactly like one for an unknown address. The sender audits it.
+        }
         return browser;
     }
 
