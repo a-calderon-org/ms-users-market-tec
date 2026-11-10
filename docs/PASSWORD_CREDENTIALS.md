@@ -27,6 +27,8 @@ El inicio de sesión normal **no** exige Magic Link. El mismo `userId`, JWT, ses
   por el enlace confirmado, válida 10 minutos.
 * `password_attempt_throttle(key_hash, failures, window_start_ms, locked_until_ms)`: clave = SHA-256 de la dirección normalizada
   (o del `userId` para cambios), de modo que direcciones inexistentes se limitan igual que las existentes.
+  Un acierto restablece la fila a cero (`UPDATE`), no la borra: la identidad de ejecución no tiene `DELETE`
+  (`scripts/azure/sql/grant-runtime-identity.sql`). Las filas no se purgan (una por clave intentada).
 
 Hash: concurrencia acotada (`USERS_PASSWORD_HASH_MAX_CONCURRENT`, por defecto 4; cada hash retiene ~19 MiB). Saturado → `503`.
 

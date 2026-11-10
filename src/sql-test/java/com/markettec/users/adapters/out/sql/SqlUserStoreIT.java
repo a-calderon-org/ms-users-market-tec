@@ -1908,6 +1908,34 @@ class SqlUserStoreIT {
     }
 
     @Test
+    void restrictedRuntimePasswordFlowNeedsNoDeleteOrDdlPermission() throws Exception {
+        var runtime = server.restrictedRuntimeSource();
+        // The privileges scripts/azure/sql/grant-runtime-identity.sql gives the Azure runtime identity.
+        jdbc.execute("GRANT SELECT, INSERT, UPDATE ON SCHEMA::dbo TO mtec35_runtime");
+        jdbc.execute("DENY INSERT, UPDATE, DELETE, ALTER ON OBJECT::dbo.flyway_schema_history TO mtec35_runtime");
+        var restrictedJdbc = new JdbcTemplate(runtime);
+        assertEquals(0, restrictedJdbc.queryForObject("SELECT HAS_PERMS_BY_NAME('dbo', 'SCHEMA', 'DELETE')", Integer.class));
+        assertEquals(0, restrictedJdbc.queryForObject("SELECT HAS_PERMS_BY_NAME('dbo', 'SCHEMA', 'ALTER')", Integer.class));
+        var restricted = new SqlUserStore(restrictedJdbc, new DataSourceTransactionManager(runtime));
+        var stack = passwordStack(restricted, runtime);
+        String address = "pw.runtime@estudiantec.cr";
+        var registered = viaLink(stack, address);
+        UserId id = new UserId(registered.userId());
+        stack.passwords().setInitial(registered.sessionId(), id, "correct horse battery");
+        // Successful login with no throttle row, then a failure, then success again (resets the row).
+        assertEquals(id.value(), stack.passwords().login(new Email(address), "correct horse battery").userId());
+        assertEquals(PasswordOperationException.Code.INVALID_CREDENTIALS, assertThrows(PasswordOperationException.class,
+                () -> stack.passwords().login(new Email(address), "wrong horse battery")).code());
+        var session = stack.passwords().login(new Email(address), "correct horse battery");
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.password_attempt_throttle WHERE failures<>0 "
+                + "OR locked_until_ms<>0", Integer.class));
+        stack.passwords().change(session.sessionId(), id, "correct horse battery", "an entirely new passphrase");
+        assertEquals(id.value(), stack.passwords().login(new Email(address), "an entirely new passphrase").userId());
+        assertThrows(DataAccessException.class,
+                () -> restrictedJdbc.update("DELETE FROM dbo.password_attempt_throttle WHERE failures=0"));
+    }
+
+    @Test
     void restrictedRuntimeCanRotateRefreshWithoutDeleteOrDdlPermissions() throws Exception {
         var runtime = server.restrictedRuntimeSource();
         var restrictedJdbc = new JdbcTemplate(runtime);
@@ -2482,6 +2510,14 @@ class SqlUserStoreIT {
             assertTrue(throttle.loadLocked(key).isEmpty());
             return null;
         });
+        // Cleared by reset, not by DELETE (the runtime has no DELETE permission): the row stays, zeroed.
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM dbo.password_attempt_throttle WHERE key_hash=? "
+                + "AND failures=0 AND window_start_ms=0 AND locked_until_ms=0", Integer.class, key));
+        store.execute(() -> {
+            throttle.save(key, new PasswordAttemptThrottle.State(1, now, Instant.EPOCH));
+            assertEquals(1, throttle.loadLocked(key).orElseThrow().failures());
+            return null;
+        });
         assertThrows(UserPersistenceException.class, () -> store.execute(() -> throttle.loadLocked("not-a-digest")));
     }
 
@@ -2490,18 +2526,22 @@ class SqlUserStoreIT {
                                  List<String[]> login, List<String[]> recovery) { }
 
     private PasswordStack passwordStack(SqlUserStore users) {
+        return passwordStack(users, source);
+    }
+
+    private PasswordStack passwordStack(SqlUserStore users, javax.sql.DataSource dataSource) {
         var login = new java.util.concurrent.CopyOnWriteArrayList<String[]>();
         var recovery = new java.util.concurrent.CopyOnWriteArrayList<String[]>();
-        var authority = new SessionAuthority(new SqlSessionRepository(new JdbcTemplate(source)), users, users, users,
+        var authority = new SessionAuthority(new SqlSessionRepository(new JdbcTemplate(dataSource)), users, users, users,
                 clock, new java.security.SecureRandom(), new SessionActionAuthorization() {
                     public void requireRenewal(Session session) { }
                     public void requireAdmissibleActivity(Session session) { }
                 }, csrfKeys());
-        var credentials = new SqlPasswordCredentialRepository(new JdbcTemplate(source));
-        var grants = new SqlPasswordSetupGrantRepository(new JdbcTemplate(source));
-        var throttle = new SqlPasswordAttemptThrottle(new JdbcTemplate(source));
-        var email = new EmailLoginService(new SqlEmailLoginAttemptRepository(new JdbcTemplate(source)), users, users, users,
-                new SqlPendingGoogleRegistrationRepository(new JdbcTemplate(source)), new UuidUserIdGenerator(),
+        var credentials = new SqlPasswordCredentialRepository(new JdbcTemplate(dataSource));
+        var grants = new SqlPasswordSetupGrantRepository(new JdbcTemplate(dataSource));
+        var throttle = new SqlPasswordAttemptThrottle(new JdbcTemplate(dataSource));
+        var email = new EmailLoginService(new SqlEmailLoginAttemptRepository(new JdbcTemplate(dataSource)), users, users, users,
+                new SqlPendingGoogleRegistrationRepository(new JdbcTemplate(dataSource)), new UuidUserIdGenerator(),
                 authority, a -> "synthetic-jwt", (to, id, secret) -> login.add(new String[]{id, secret}), clock,
                 new java.security.SecureRandom(), credentials, grants,
                 (to, id, secret) -> recovery.add(new String[]{id, secret}));
