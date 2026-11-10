@@ -854,6 +854,10 @@ class SessionAuthorityTest {
             return credentials.entrySet().stream().filter(e -> e.getValue().refreshHash().equals(hash))
                     .map(e -> data.get(e.getKey())).findFirst();
         }
+        public synchronized List<String> unrevokedSessionIds(UserId userId, Instant now) {
+            return data.values().stream().filter(x -> x.userId().equals(userId) && !x.revoked()
+                    && now.isBefore(x.absoluteUntil())).map(Session::sessionId).sorted().toList();
+        }
         public synchronized void replace(Session old, Session next) {
             check();
             if (!data.replace(old.sessionId(), old, next)) throw new IllegalStateException("stale");

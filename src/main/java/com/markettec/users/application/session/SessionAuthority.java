@@ -133,6 +133,26 @@ public final class SessionAuthority {
         });
     }
 
+    /**
+     * Revokes every other live session of the account (password change policy); the current one is kept.
+     * Already-issued access JWTs are short-lived and not individually revocable (see the MTEC-40 residual notes).
+     */
+    public int revokeOtherSessions(UserId userId, String keepSessionId) {
+        Objects.requireNonNull(userId);
+        return transactions.execute(() -> {
+            int revoked = 0;
+            for (String id : sessions.unrevokedSessionIds(userId, now())) {
+                if (id.equals(keepSessionId)) continue;
+                Session before = sessions.loadLocked(id).orElse(null);
+                if (before != null && !before.revoked() && before.userId().equals(userId)) {
+                    sessions.replace(before, before.revoke());
+                    revoked++;
+                }
+            }
+            return revoked;
+        });
+    }
+
     /** Called within the login transaction. No credential escapes before its commit. */
     public SessionTokens issue(AuthenticatedSession authenticated, InternalTokenIssuer jwt) {
         Objects.requireNonNull(authenticated);

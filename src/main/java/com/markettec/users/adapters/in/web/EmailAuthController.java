@@ -44,8 +44,8 @@ import org.springframework.web.bind.annotation.RestController;
 @Profile("sql-dev | sql-appservice | sql-integration")
 @ConditionalOnProperty(prefix = "users.email", name = "enabled", havingValue = "true")
 public final class EmailAuthController {
-    private static final String REFRESH = "__Host-mtec-refresh";
-    private static final String ATTEMPT = "__Host-mtec-email-attempt";
+    static final String REFRESH = "__Host-mtec-refresh";
+    static final String ATTEMPT = "__Host-mtec-email-attempt";
     private final ObjectProvider<EmailLoginService> service;
     private final SessionAuthority sessions;
     private final UserRepository users;
@@ -119,6 +119,12 @@ public final class EmailAuthController {
         String browser = browserProof(request);
         var result = available().confirm(body.get("attemptId").asText(), browser, body.get("token").asText());
         headers.add(HttpHeaders.SET_COOKIE, cookie(ATTEMPT, "", 0));
+        return authenticated(result, headers, sessions, users, clock);
+    }
+
+    /** The session response shared by every institutional login: cookie, snapshot and {@code AuthResponse}. */
+    static ResponseEntity<?> authenticated(GoogleLoginService.Result result, HttpHeaders headers,
+            SessionAuthority sessions, UserRepository users, Clock clock) throws ParseException {
         var session = sessions.current(result.sessionId()).orElseThrow(SessionRejectedException::new);
         var user = users.findById(new UserId(result.userId())).orElseThrow(SessionRejectedException::new);
         user.requireActive();
@@ -153,14 +159,14 @@ public final class EmailAuthController {
         return secret;
     }
 
-    private static String attemptCsrf(String secret) {
+    static String attemptCsrf(String secret) {
         try {
             return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
                     .digest(("mtec-email-attempt-csrf:" + secret).getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
         } catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
     }
 
-    private static String cookie(String name, String value, long seconds) {
+    static String cookie(String name, String value, long seconds) {
         return ResponseCookie.from(name, value).httpOnly(true).secure(true).path("/").sameSite("Lax")
                 .maxAge(seconds).build().toString();
     }
@@ -191,7 +197,7 @@ public final class EmailAuthController {
         return ResponseEntity.status(response.getStatusCode()).headers(headers).body(response.getBody());
     }
 
-    private static HttpHeaders cors(String origin) {
+    static HttpHeaders cors(String origin) {
         var h = new HttpHeaders();
         h.setCacheControl("no-store");
         h.setAccessControlAllowOrigin(origin);

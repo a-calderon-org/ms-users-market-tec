@@ -42,9 +42,18 @@ users:
     from: ${USERS_EMAIL_FROM:}
     login-link-base-url: ${USERS_EMAIL_LOGIN_LINK_BASE_URL:}
     proof-link-base-url: ${USERS_EMAIL_PROOF_LINK_BASE_URL:}
+    # Password recovery links point at their own page; without it, recovery requests answer 503.
+    recovery-link-base-url: ${USERS_EMAIL_RECOVERY_LINK_BASE_URL:}
     provider:
       endpoint: ${USERS_EMAIL_PROVIDER_ENDPOINT:}
       api-key: ${USERS_EMAIL_PROVIDER_API_KEY:}
+  password:
+    # Institutional email + password sign-in, first-password setup and password change (Argon2id).
+    enabled: ${USERS_PASSWORD_ENABLED:false}
+    allowed-origins: ${USERS_PASSWORD_ALLOWED_ORIGINS:${USERS_EMAIL_ALLOWED_ORIGINS:${USERS_GOOGLE_HTTP_ALLOWED_ORIGINS:}}}
+    hash:
+      max-concurrent: ${USERS_PASSWORD_HASH_MAX_CONCURRENT:4}
+      wait-millis: ${USERS_PASSWORD_HASH_WAIT_MILLIS:2000}
   session:
     logout:
       enabled: ${USERS_SESSION_LOGOUT_ENABLED:false}

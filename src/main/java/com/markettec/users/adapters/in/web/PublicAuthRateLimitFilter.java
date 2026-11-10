@@ -24,7 +24,9 @@ public final class PublicAuthRateLimitFilter extends OncePerRequestFilter {
             "/v1/auth/google", 60,
             "/v1/auth/google/registrations", 30,
             "/v1/auth/email/requests", 30,
-            "/v1/auth/email/confirm", 60);
+            "/v1/auth/email/confirm", 60,
+            "/v1/auth/password/login", 60,
+            "/v1/auth/password/recovery/requests", 30);
     private static final long WINDOW_SECONDS = 60;
 
     private final Map<String, Window> windows;

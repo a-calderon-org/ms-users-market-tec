@@ -10,7 +10,7 @@ import org.springframework.context.annotation.Profile;
 /** Basic rate limit for the anonymous auth routes, whenever Google or Magic Link registers them. */
 @Configuration
 @Profile("sql-dev | sql-appservice | sql-integration")
-@ConditionalOnExpression("${users.google.http.enabled:false} or ${users.email.enabled:false}")
+@ConditionalOnExpression("${users.google.http.enabled:false} or ${users.email.enabled:false} or ${users.password.enabled:false}")
 public class PublicAuthRateLimitConfig {
     @Bean
     PublicAuthRateLimitFilter publicAuthRateLimitFilter(Clock clock) {

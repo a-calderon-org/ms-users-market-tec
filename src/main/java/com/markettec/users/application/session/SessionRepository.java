@@ -8,6 +8,8 @@ public interface SessionRepository {
     void insert(Session session);
     Optional<Session> loadLocked(String sessionId);
     Optional<Session> loadByRefreshHashLocked(String refreshHash);
+    /** Ids of this user's sessions that are not revoked and not past their absolute deadline. */
+    java.util.List<String> unrevokedSessionIds(com.markettec.users.domain.model.UserId userId, java.time.Instant now);
     void replace(Session expected, Session replacement);
     /** Only SHA-256 verifiers are persisted. Caller holds the session row lock. */
     Optional<SessionVerifiers> verifiers(String sessionId);

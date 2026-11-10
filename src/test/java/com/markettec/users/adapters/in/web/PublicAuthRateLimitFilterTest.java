@@ -70,6 +70,7 @@ class PublicAuthRateLimitFilterTest {
 
     @Test void defaultLimitsCoverEveryAnonymousAuthRoute() {
         assertThat(PublicAuthRateLimitFilter.LIMITS).containsOnlyKeys("/v1/auth/attempts", "/v1/auth/google",
-                "/v1/auth/google/registrations", "/v1/auth/email/requests", "/v1/auth/email/confirm");
+                "/v1/auth/google/registrations", "/v1/auth/email/requests", "/v1/auth/email/confirm",
+                "/v1/auth/password/login", "/v1/auth/password/recovery/requests");
     }
 }

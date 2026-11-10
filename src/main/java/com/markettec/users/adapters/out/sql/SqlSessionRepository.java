@@ -53,6 +53,13 @@ public final class SqlSessionRepository implements SessionRepository {
             """, (rs, row) -> read(rs), hash).stream().findFirst();
     }
 
+    @Override public java.util.List<String> unrevokedSessionIds(com.markettec.users.domain.model.UserId userId,
+                                                               java.time.Instant now) {
+        requireTransaction();
+        return jdbc.query("SELECT session_id FROM dbo.sessions WHERE user_id=? AND revoked=0 AND absolute_until_ms>? "
+                + "ORDER BY session_id", (rs, row) -> rs.getString(1).trim(), userId.value(), ms(now));
+    }
+
     @Override public void replace(Session before, Session after) {
         requireTransaction();
         if (!before.sessionId().equals(after.sessionId()) || !before.userId().equals(after.userId())

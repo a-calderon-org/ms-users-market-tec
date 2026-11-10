@@ -60,6 +60,11 @@ class ProtectedApiCorsFilterTest {
                 .andExpect(status().isNoContent()).andExpect(header().string("Access-Control-Allow-Methods", "POST"));
         mvc.perform(options("/v1/me/auth-methods").header("Origin", ORIGIN).header("Access-Control-Request-Method", "POST"))
                 .andExpect(status().isNoContent());
+        mvc.perform(options("/v1/me/password").header("Origin", ORIGIN).header("Access-Control-Request-Method", "PUT")
+                .header("Access-Control-Request-Headers", "authorization, x-csrf-token, content-type"))
+                .andExpect(status().isNoContent()).andExpect(header().string("Access-Control-Allow-Methods", "GET, POST, PUT"));
+        mvc.perform(options("/v1/me/password").header("Origin", "https://evil.example").header("Access-Control-Request-Method", "PUT"))
+                .andExpect(status().isForbidden());
     }
 
     /** Codex reproduction: these were configurable and earned a credentialed preflight. */

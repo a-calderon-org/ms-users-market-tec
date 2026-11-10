@@ -59,6 +59,7 @@ class GoogleLoginServiceTest {
             sessions.put(s.sessionId(), s);
         }
         public Optional<Session> loadLocked(String id) { return Optional.ofNullable(sessions.get(id)); }
+        public List<String> unrevokedSessionIds(UserId userId, Instant now) { return List.of(); }
         public Optional<Session> loadByRefreshHashLocked(String hash) {
             return credentials.entrySet().stream().filter(e -> e.getValue().refreshHash().equals(hash))
                     .map(e -> sessions.get(e.getKey())).findFirst();
