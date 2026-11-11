@@ -220,7 +220,13 @@ class SqlUserStoreIT {
     @Test
     void updatesOnlyTheProfileDetailsAndIncrementsVersion() {
         User user = service().createUser(email, details, photo);
-        var changed = new ProfileDetails("ana2", "Ana María", "");
+        // The username is immutable: a different value is rejected before any write.
+        assertThrows(IllegalArgumentException.class, () -> service().updateOwnProfile(user::userId, user.userId(),
+                new ProfileDetails("ana2", "Ana María", "")));
+        assertEquals("ana", jdbc.queryForObject("SELECT nombre_usuario FROM dbo.profiles WHERE user_id=?",
+                String.class, user.userId().value()));
+        assertEquals(0L, version(user));
+        var changed = new ProfileDetails("ana", "Ana María", "");
         var result = service().updateOwnProfile(user::userId, user.userId(), changed);
         assertEquals(changed, newStore().findById(user.userId()).orElseThrow().profile().details());
         assertEquals(user.profile().correo().address(), result.correo().address());
@@ -357,7 +363,7 @@ class SqlUserStoreIT {
         User user = user();
         store.insert(user);
         assertThrows(IllegalStateException.class, () -> store.execute(() -> {
-            store.replace(user, user.updateProfile(new ProfileDetails("new", "New", ""), clock.instant()).deactivate());
+            store.replace(user, user.updateProfile(new ProfileDetails("ana", "New", ""), clock.instant()).deactivate());
             throw new IllegalStateException("injected failure");
         }));
         assertEquals(user, store.findById(user.userId()).orElseThrow());
@@ -406,7 +412,7 @@ class SqlUserStoreIT {
     void staleAggregateCannotOverwriteCommittedChanges() {
         User before = user();
         store.insert(before);
-        User after = before.updateProfile(new ProfileDetails("after", "After", ""), clock.instant());
+        User after = before.updateProfile(new ProfileDetails("ana", "After", ""), clock.instant());
         store.replace(before, after);
         reason(CONCURRENT_MODIFICATION, () -> newStore().replace(before, before.deactivate()));
         assertEquals(after, store.findById(before.userId()).orElseThrow());
@@ -421,7 +427,7 @@ class SqlUserStoreIT {
         Supplier<String> update = () -> {
             await(gate);
             try {
-                newStore().replace(before, before.updateProfile(new ProfileDetails(UUID.randomUUID().toString(), "Changed", ""), clock.instant()));
+                newStore().replace(before, before.updateProfile(new ProfileDetails("ana", UUID.randomUUID().toString(), ""), clock.instant()));
                 return "saved";
             } catch (UserDomainException failure) {
                 return failure.reason().name();
@@ -585,7 +591,7 @@ class SqlUserStoreIT {
         User expected = inMemory.registerVerifiedIdentity(identity, details, photo);
         assertEquals(expected, sql.registerVerifiedIdentity(identity, details, photo));
         assertEquals(inMemory.registerVerifiedIdentity(identity, details, photo), sql.registerVerifiedIdentity(identity, details, photo));
-        var changed = new ProfileDetails("other", "Other", "");
+        var changed = new ProfileDetails("ana", "Other", "");
         assertEquals(inMemory.updateOwnProfile(() -> id, id, changed), sql.updateOwnProfile(() -> id, id, changed));
         assertEquals(inMemory.deactivateUser(() -> id, id), sql.deactivateUser(() -> id, id));
         assertEquals(memory.findById(id), store.findById(id));
@@ -1471,7 +1477,7 @@ class SqlUserStoreIT {
         var revoking = new CountDownLatch(1);
         var pool = Executors.newFixedThreadPool(2);
         try {
-            var changed = new ProfileDetails("serial", "Serial", "Owner");
+            var changed = new ProfileDetails("ana", "Serial", "Owner");
             var operation = pool.submit(() -> authority.get().withCurrentSession(session.sessionId(), owner.userId(), () -> {
                 entered.countDown();
                 try { if (!release.await(15, TimeUnit.SECONDS)) throw new AssertionError("operation timed out"); }
@@ -1897,7 +1903,7 @@ class SqlUserStoreIT {
         User user = application.registerVerifiedIdentity(identity, details, photo);
         assertEquals(user, restricted.findById(user.userId()).orElseThrow());
         assertEquals(user.userId(), restricted.findByKey(identity.key()).orElseThrow().userId());
-        application.updateOwnProfile(user::userId, user.userId(), new ProfileDetails("runtime", "Runtime", ""));
+        application.updateOwnProfile(user::userId, user.userId(), new ProfileDetails("ana", "Runtime", ""));
         application.deactivateUser(user::userId, user.userId());
         assertEquals(0, restrictedJdbc.queryForObject("SELECT IS_MEMBER('db_owner')", Integer.class));
         assertEquals(0, restrictedJdbc.queryForObject("SELECT HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'CREATE TABLE')", Integer.class));
