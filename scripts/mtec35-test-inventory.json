@@ -1,5 +1,5 @@
 {
-  "normal_count": 508,
+  "normal_count": 513,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -99,7 +99,8 @@
       "malformedOversizedAndJoseKeyReferencesAreRejected",
       "errorsNeverEchoCredential(CapturedOutput)",
       "policyRejectsUntrustedSourceAndMissingAudience",
-      "configurationFailsClosedWhenDisabledOrIncomplete"
+      "configurationFailsClosedWhenDisabledOrIncomplete",
+      "givenAndFamilyNamesAreExposedOnlyWhenValidProfileValues"
     ],
     "com.markettec.users.adapters.out.google.CachedGooglePublicKeysTest": [
       "cacheHonorsMetadataBoundsAndRefreshesRotatedKeys",
@@ -252,7 +253,9 @@
       "persistenceFailureRollsBackUserAndAttempt",
       "signingAndSessionFailureRollBackAccountLinkAndAttempt",
       "unverifiedOrMissingEmailCannotRegister",
-      "verifiedInstitutionalGoogleCreatesAccountLinkAndCredentialsImmediately"
+      "verifiedInstitutionalGoogleCreatesAccountLinkAndCredentialsImmediately",
+      "googleNamesPrefillTheProfileAndUsernameStaysTheGeneratedUserId",
+      "missingGoogleNamesKeepTheExistingPlaceholders"
     ],
     "com.markettec.users.config.GoogleRegistrationSafetyConfigTest": [
       "disabledRegistrationNeedsNoSender",
@@ -323,6 +326,7 @@
     ],
     "com.markettec.users.adapters.out.mail.HttpEmailLinkSenderTest": [
       "complete202IsAcceptedWithSecretOnlyInTheFragment",
+      "acsUsesManagedIdentityAndPreservesTheMagicLink",
       "fast202HeadersWithDelayedBodyAreCutAtTheDeadlineAsUncertainAcceptance",
       "bodyThatNeverEndsIsCutAtTheDeadline",
       "silentProviderTimesOutWithoutAStatus",

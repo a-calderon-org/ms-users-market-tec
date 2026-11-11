@@ -3,6 +3,9 @@ package com.markettec.users.adapters.out.mail;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.azure.core.credential.AccessToken;
+import com.azure.core.credential.TokenCredential;
+import com.azure.core.credential.TokenRequestContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.markettec.users.application.session.EmailDeliveryException;
@@ -14,12 +17,15 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.Socket;
+import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -36,6 +42,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
+import reactor.core.publisher.Mono;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
@@ -184,6 +191,42 @@ class HttpEmailLinkSenderTest {
         assertEquals("login", event.path("channel").asText());
         assertEquals("accepted", event.path("outcome").asText());
         assertEquals(202, event.path("providerStatus").asInt());
+        assertNoSecrets(event.toString());
+        assertSingleRequestAndNoRetry();
+    }
+
+    @Test void acsUsesManagedIdentityAndPreservesTheMagicLink() throws Exception {
+        provider((out, s) -> write(out, "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
+        var identity = mock(TokenCredential.class);
+        when(identity.getToken(any(TokenRequestContext.class))).thenAnswer(call -> {
+            TokenRequestContext request = call.getArgument(0);
+            assertEquals(List.of("https://communication.azure.com//.default"), request.getScopes());
+            return Mono.just(new AccessToken(KEY, OffsetDateTime.now().plusHours(1)));
+        });
+        var transport = mock(HttpClient.class);
+        when(transport.followRedirects()).thenReturn(HttpClient.Redirect.NEVER);
+        when(transport.<Void>sendAsync(any(), any())).thenAnswer(call -> {
+            HttpRequest request = call.getArgument(0);
+            assertEquals(URI.create("https://staging.communication.azure.com/emails:send?api-version=2023-03-31"),
+                    request.uri());
+            var loopback = URI.create("https://localhost:" + server.getLocalPort() + request.uri().getRawPath());
+            return client.sendAsync(HttpRequest.newBuilder(request, (name, value) -> true).uri(loopback).build(),
+                    call.getArgument(1));
+        });
+        String from = "DoNotReply@staging.azurecomm.net";
+        HttpEmailLinkSender.forAcs(transport, "https://staging.communication.azure.com", identity, from,
+                "https://app.markettec.example/auth/email", "Asunto", "Intro", "login").send(TO, ATTEMPT, SECRET);
+
+        String request = requests.getFirst();
+        assertTrue(request.toLowerCase(Locale.ROOT).contains("authorization: bearer " + KEY.toLowerCase(Locale.ROOT)));
+        var body = json.readTree(request.substring(request.indexOf("\r\n\r\n") + 4));
+        assertEquals(from, body.path("senderAddress").asText());
+        assertEquals(TO.address(), body.path("recipients").path("to").get(0).path("address").asText());
+        assertEquals("Asunto", body.path("content").path("subject").asText());
+        assertEquals("Intro\n\nhttps://app.markettec.example/auth/email#attempt=" + ATTEMPT + "&token=" + SECRET + "\n",
+                body.path("content").path("plainText").asText());
+        var event = formatted().getFirst();
+        assertEquals("accepted", event.path("outcome").asText());
         assertNoSecrets(event.toString());
         assertSingleRequestAndNoRetry();
     }

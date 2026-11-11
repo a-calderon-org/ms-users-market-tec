@@ -20,6 +20,19 @@ class UserDomainTest {
     private final URI photo = URI.create("https://example.invalid/ana.png");
 
     @Test
+    void usernameIsImmutableWhileNamesRemainEditable() {
+        User user = User.create(id, email, details, photo, now);
+        User renamed = user.updateProfile(new ProfileDetails("ana", "Ana María", "López Mora"), now.plusSeconds(1));
+        assertEquals("ana", renamed.profile().details().nombreUsuario());
+        assertEquals("Ana María", renamed.profile().details().nombre());
+        assertEquals("López Mora", renamed.profile().details().apellidos());
+        assertThrows(IllegalArgumentException.class,
+                () -> user.updateProfile(new ProfileDetails("otro", "Ana", "López"), now.plusSeconds(1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> user.updateProfile(new ProfileDetails("ANA", "Ana", "López"), now.plusSeconds(1)));
+    }
+
+    @Test
     void createsAnActiveUnverifiedInternalUserWithOwnedProfile() {
         User user = User.create(id, email, details, photo, now);
         assertEquals(AccountStatus.ACTIVE, user.status());

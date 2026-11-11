@@ -25,8 +25,12 @@ public record User(UserId userId, AccountStatus status, UserProfile profile) {
         }
     }
 
+    /** Only nombre and apellidos are editable: the username assigned at creation never changes. */
     public User updateProfile(ProfileDetails details, Instant now) {
         requireActive();
+        if (!profile.details().nombreUsuario().equals(details.nombreUsuario())) {
+            throw new IllegalArgumentException("Username is immutable");
+        }
         return new User(userId, status, profile.update(details, now));
     }
 

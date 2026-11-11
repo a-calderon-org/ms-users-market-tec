@@ -1,5 +1,7 @@
 package com.markettec.users.config;
 
+import com.azure.core.credential.TokenCredential;
+import com.azure.identity.ManagedIdentityCredentialBuilder;
 import com.markettec.users.adapters.out.UuidUserIdGenerator;
 import com.markettec.users.adapters.out.jwt.InternalJwtService;
 import com.markettec.users.adapters.out.mail.DetachedLinkSender;
@@ -29,7 +31,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Magic Link delivery and login. Activated only with {@code users.email.enabled=true}; the provider
- * endpoint, key, sender and login link URL must then all be supplied (startup fails closed otherwise).
+ * endpoint, sender and login link URL are required. Resend also requires an API key.
  * The proof-link sender (auth-method linking, optional for its consumer) exists only when its URL is set.
  */
 @Configuration
@@ -44,6 +46,27 @@ public class EmailAuthConfig {
      * little validity left (64 queued x 10 s provider deadline could otherwise exceed the whole lifetime).
      */
     static final Duration RECOVERY_MAX_QUEUE_AGE = Duration.ofMinutes(2);
+    private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
+            .followRedirects(HttpClient.Redirect.NEVER).build();
+    private final String endpoint;
+    private final String apiKey;
+    private final String from;
+    private final TokenCredential managedIdentity;
+
+    public EmailAuthConfig(
+            @Value("${users.email.provider.type:resend}") String provider,
+            @Value("${users.email.provider.endpoint:}") String endpoint,
+            @Value("${users.email.provider.api-key:}") String apiKey,
+            @Value("${users.email.from:}") String from) {
+        this.endpoint = endpoint;
+        this.apiKey = apiKey;
+        this.from = from;
+        this.managedIdentity = switch (provider) {
+            case "resend" -> null;
+            case "acs" -> new ManagedIdentityCredentialBuilder().build();
+            default -> throw new IllegalArgumentException("Unknown mail provider");
+        };
+    }
 
     @Bean
     SqlEmailLoginAttemptRepository sqlEmailLoginAttemptRepository(DataSource source) {
@@ -53,11 +76,8 @@ public class EmailAuthConfig {
     @Bean
     @Qualifier("loginLinkSender")
     InstitutionalLinkSender loginLinkSender(
-            @Value("${users.email.provider.endpoint:}") String endpoint,
-            @Value("${users.email.provider.api-key:}") String apiKey,
-            @Value("${users.email.from:}") String from,
             @Value("${users.email.login-link-base-url:}") String linkBase) {
-        return new HttpEmailLinkSender(client(), endpoint, apiKey, from, linkBase, SUBJECT,
+        return linkSender(linkBase, SUBJECT,
                 "Usa este enlace para iniciar sesión. Vence en 10 minutos y solo funciona una vez:", "login");
     }
 
@@ -65,11 +85,8 @@ public class EmailAuthConfig {
     @Qualifier("proofLinkSender")
     @ConditionalOnExpression("!'${users.email.proof-link-base-url:}'.isBlank()")
     InstitutionalLinkSender proofLinkSender(
-            @Value("${users.email.provider.endpoint:}") String endpoint,
-            @Value("${users.email.provider.api-key:}") String apiKey,
-            @Value("${users.email.from:}") String from,
             @Value("${users.email.proof-link-base-url:}") String linkBase) {
-        return new HttpEmailLinkSender(client(), endpoint, apiKey, from, linkBase,
+        return linkSender(linkBase,
                 "Confirma tu identidad en MarketTec",
                 "Usa este enlace para confirmar la operación. Vence en 5 minutos y solo funciona una vez:", "proof");
     }
@@ -79,12 +96,9 @@ public class EmailAuthConfig {
     @Qualifier("recoveryLinkSender")
     @ConditionalOnExpression("!'${users.email.recovery-link-base-url:}'.isBlank()")
     InstitutionalLinkSender recoveryLinkSender(Clock clock,
-            @Value("${users.email.provider.endpoint:}") String endpoint,
-            @Value("${users.email.provider.api-key:}") String apiKey,
-            @Value("${users.email.from:}") String from,
             @Value("${users.email.recovery-link-base-url:}") String linkBase) {
         // Detached: recovery links go only to existing accounts, so the response must not wait for the provider.
-        return new DetachedLinkSender(new HttpEmailLinkSender(client(), endpoint, apiKey, from, linkBase,
+        return new DetachedLinkSender(linkSender(linkBase,
                 "Recupera el acceso a MarketTec",
                 "Usa este enlace para recuperar el acceso. Vence en 10 minutos y solo funciona una vez:", "recovery"),
                 "recovery", RECOVERY_QUEUE, RECOVERY_MAX_QUEUE_AGE, clock);
@@ -108,8 +122,9 @@ public class EmailAuthConfig {
                 recoverySender.getIfAvailable());
     }
 
-    private static HttpClient client() {
-        return HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
-                .followRedirects(HttpClient.Redirect.NEVER).build();
+    private InstitutionalLinkSender linkSender(String linkBase, String subject, String intro, String channel) {
+        if (managedIdentity == null)
+            return new HttpEmailLinkSender(client, endpoint, apiKey, from, linkBase, subject, intro, channel);
+        return HttpEmailLinkSender.forAcs(client, endpoint, managedIdentity, from, linkBase, subject, intro, channel);
     }
 }
