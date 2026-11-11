@@ -1,5 +1,5 @@
 {
-  "normal_count": 508,
+  "normal_count": 509,
   "sql_class": "com.markettec.users.adapters.out.sql.SqlUserStoreIT",
   "sql_methods": [
     "accountAndIdentityContractMatchesTheInMemoryAdapter",
@@ -323,6 +323,7 @@
     ],
     "com.markettec.users.adapters.out.mail.HttpEmailLinkSenderTest": [
       "complete202IsAcceptedWithSecretOnlyInTheFragment",
+      "acsUsesManagedIdentityAndPreservesTheMagicLink",
       "fast202HeadersWithDelayedBodyAreCutAtTheDeadlineAsUncertainAcceptance",
       "bodyThatNeverEndsIsCutAtTheDeadline",
       "silentProviderTimesOutWithoutAStatus",

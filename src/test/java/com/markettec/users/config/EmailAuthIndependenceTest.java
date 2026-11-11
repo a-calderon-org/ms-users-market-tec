@@ -47,7 +47,7 @@ class EmailAuthIndependenceTest {
                 assertThat(context).hasFailed());
     }
 
-    /** Login delivery needs only the provider endpoint, key, sender and the Angular link URL. */
+    /** Login delivery needs provider settings and the Angular link URL. */
     @Test void emailServiceWiresWithLoginSettingsOnlyAndFailsClosedWithoutThem() {
         var service = new ApplicationContextRunner()
                 .withBean(javax.sql.DataSource.class, () -> mock(javax.sql.DataSource.class))
@@ -73,6 +73,13 @@ class EmailAuthIndependenceTest {
                 "users.email.from=no-reply@mail.example",
                 "users.email.login-link-base-url=" + ORIGIN + "/acceso/correo").run(context ->
                     assertThat(context).hasFailed());
+        service.withPropertyValues("users.email.provider.type=acs",
+                "users.email.provider.endpoint=https://staging.communication.azure.com",
+                "users.email.from=DoNotReply@staging.azurecomm.net",
+                "users.email.login-link-base-url=" + ORIGIN + "/acceso/correo").run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(com.markettec.users.application.session.EmailLoginService.class);
+        });
     }
 
     @Test void nothingIsRegisteredWithEveryFlagOff() {

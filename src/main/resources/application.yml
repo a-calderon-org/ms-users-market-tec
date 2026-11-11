@@ -45,6 +45,7 @@ users:
     # Password recovery links point at their own page; without it, recovery requests answer 503.
     recovery-link-base-url: ${USERS_EMAIL_RECOVERY_LINK_BASE_URL:}
     provider:
+      type: ${USERS_EMAIL_PROVIDER:resend}
       endpoint: ${USERS_EMAIL_PROVIDER_ENDPOINT:}
       api-key: ${USERS_EMAIL_PROVIDER_API_KEY:}
   password:
