@@ -71,14 +71,37 @@ class NimbusGoogleIdentityVerifierTest {
         assertEquals(AUD, identity.audience());
         assertEquals(NOW.minusSeconds(30), identity.issuedAt());
         assertEquals(NOW.plusSeconds(300), identity.expiresAt());
-        assertEquals(6, identity.getClass().getRecordComponents().length);
+        assertEquals(8, identity.getClass().getRecordComponents().length);
         assertEquals("admin@tec.ac.cr", identity.verifiedEmail().address());
         assertFalse(identity.toString().contains("admin@tec.ac.cr"));
+        // "name" alone is not split into given/family names.
+        assertNull(identity.givenName());
+        assertNull(identity.familyName());
         assertNull(verifier.verify(token(b -> b.claim("email", "other@example.org")
                 .claim("email_verified", false).claim("hd", "other.example")), context).verifiedEmail());
         assertNull(verifier.verify(token(b -> b.claim("email", "other@tec.ac.cr")),
                 context).verifiedEmail());
         // No user repository, UserId or JWT issuer is involved in verification.
+    }
+
+    @Test
+    void givenAndFamilyNamesAreExposedOnlyWhenValidProfileValues() throws Exception {
+        var named = verifier.verify(token(b -> b.claim("given_name", "  Ana María ")
+                .claim("family_name", "López Mora")), context);
+        assertEquals("Ana María", named.givenName());
+        assertEquals("López Mora", named.familyName());
+        assertFalse(named.toString().contains("Ana"));
+        assertFalse(named.toString().contains("López"));
+
+        var invalid = verifier.verify(token(b -> b.claim("given_name", "a".repeat(101))
+                .claim("family_name", "Bad\u0007Name")), context);
+        assertNull(invalid.givenName());
+        assertNull(invalid.familyName());
+
+        var wrongTypes = verifier.verify(token(b -> b.claim("given_name", 42)
+                .claim("family_name", "   ")), context);
+        assertNull(wrongTypes.givenName());
+        assertNull(wrongTypes.familyName());
     }
 
     @Test

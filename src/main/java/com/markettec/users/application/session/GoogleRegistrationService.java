@@ -76,8 +76,12 @@ public final class GoogleRegistrationService {
                     || pending.historicalEmailExists(proof.verifiedEmail().normalized()))
                 throw new SessionRejectedException(SessionRejectedException.Reason.IDENTITY_CONFLICT);
             var userId = ids.nextId();
+            // Username stays the generated userId (unchanged mechanism); only the names come from Google when given.
             var user = User.create(userId, proof.verifiedEmail(),
-                    new ProfileDetails(userId.value(), "Google", ""), URI.create("about:blank"), now());
+                    new ProfileDetails(userId.value(),
+                            proof.givenName() != null ? proof.givenName() : "Google",
+                            proof.familyName() != null ? proof.familyName() : ""),
+                    URI.create("about:blank"), now());
             users.insert(user);
             users.replace(user, user.verifyProfileEmail(proof.verifiedEmail()));
             identities.insertOrGet(new ExternalIdentity(IdentityProvider.GOOGLE, key, userId,

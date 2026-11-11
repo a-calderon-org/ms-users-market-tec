@@ -81,13 +81,26 @@ public final class NimbusGoogleIdentityVerifier implements GoogleIdentityVerifie
                 verifiedEmail = new Email(claims.getStringClaim("email"));
             }
             return new VerifiedGoogleIdentity(issuer, subject, context.expectedAudience(),
-                    issuedAt.toInstant(), expiration.toInstant(), verifiedEmail);
+                    issuedAt.toInstant(), expiration.toInstant(), verifiedEmail,
+                    profileName(claims, "given_name", 100), profileName(claims, "family_name", 160));
         } catch (InvalidGoogleTokenException e) {
             throw e;
         } catch (Exception e) {
             // Parse, key-fetch and claim-type failures share one safe error surface.
             throw new InvalidGoogleTokenException();
         }
+    }
+
+    /**
+     * Optional display-name claim, only after the whole token verified. Anything that would not be a valid
+     * profile field (non-string, blank, control characters, too long) is dropped, never truncated or guessed.
+     */
+    static String profileName(JWTClaimsSet claims, String name, int maxCodePoints) {
+        if (!(claims.getClaim(name) instanceof String raw)) return null;
+        String value = raw.strip();
+        if (value.isEmpty() || value.codePointCount(0, value.length()) > maxCodePoints
+                || value.codePoints().anyMatch(Character::isISOControl)) return null;
+        return value;
     }
 
     private RSAKey select(String kid, boolean refresh) {

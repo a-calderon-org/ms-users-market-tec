@@ -294,9 +294,13 @@ class UserServiceTest {
     @Test
     void updatesOnlyEditableProfileFields() {
         User user = create();
-        ProfileDetails replacement = new ProfileDetails("ana.nueva", "Ana María", "López");
+        ProfileDetails replacement = new ProfileDetails("ana", "Ana María", "López");
         UserService later = new UserService(store, store, ids, store, authorization,
                 Clock.offset(CLOCK, java.time.Duration.ofSeconds(60)));
+        // The username is immutable: a different value is rejected and nothing is written.
+        assertThrows(IllegalArgumentException.class, () -> later.updateOwnProfile(principal(user), user.userId(),
+                new ProfileDetails("ana.nueva", "Ana María", "López")));
+        assertEquals(user, store.findById(user.userId()).orElseThrow());
         UserProfile updated = later.updateOwnProfile(principal(user), user.userId(), replacement);
         assertEquals(replacement, updated.details());
         assertEquals(user.userId(), updated.userId());

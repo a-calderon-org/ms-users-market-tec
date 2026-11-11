@@ -22,6 +22,7 @@ class GoogleRegistrationServiceTest {
     private Email email = new Email("someone@tec.ac.cr");
     private boolean verified = true, historical, invalidToken;
     private String subject = "new-google-sub";
+    private String givenName, familyName;
     private UserId lastGenerated;
     private final SessionAuthority sessions = mock(SessionAuthority.class);
     private final UserTransactions tx = new UserTransactions() {
@@ -51,7 +52,7 @@ class GoogleRegistrationServiceTest {
         if (invalidToken || !("nonce:" + context.expectedNonce()).equals(token))
             throw new IllegalArgumentException("invalid token");
         return new VerifiedGoogleIdentity(key.issuer(), subject, context.expectedAudience(),
-                start, start.plusSeconds(3600), verified ? email : null);
+                start, start.plusSeconds(3600), verified ? email : null, givenName, familyName);
     };
     private GoogleRegistrationService service() {
         when(sessions.createGoogle(any())).thenReturn(new AuthenticatedSession("a".repeat(32)));
@@ -80,6 +81,22 @@ class GoogleRegistrationServiceTest {
         verify(sessions).issue(any(), any());
         assertEquals(SessionRejectedException.Reason.ATTEMPT_CONSUMED,
                 assertThrows(SessionRejectedException.class, () -> complete(service, c)).reason());
+    }
+
+    @Test void googleNamesPrefillTheProfileAndUsernameStaysTheGeneratedUserId() {
+        givenName = "Ana";
+        familyName = "López Mora";
+        var service = service();
+        complete(service, service.begin());
+        var details = users.findById(lastGenerated).orElseThrow().profile().details();
+        assertEquals(new ProfileDetails(lastGenerated.value(), "Ana", "López Mora"), details);
+    }
+
+    @Test void missingGoogleNamesKeepTheExistingPlaceholders() {
+        var service = service();
+        complete(service, service.begin());
+        var details = users.findById(lastGenerated).orElseThrow().profile().details();
+        assertEquals(new ProfileDetails(lastGenerated.value(), "Google", ""), details);
     }
 
     @Test void anyVerifiedGoogleEmailCanRegisterNotOnlyInstitutionalDomains() {
